@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: oklch(0.985 0 0);
+  --color-surface: oklch(1 0 0);
+  --color-fg: oklch(0.15 0 0);
+  --color-muted: oklch(0.96 0 0);
+  --color-muted-foreground: oklch(0.55 0 0);
+  --color-border: oklch(0.91 0 0);
+  --color-accent: oklch(0.15 0 0);
+  --color-accent-fg: oklch(1 0 0);
+  --color-destructive: oklch(0.55 0.24 27);
+  --color-success: oklch(0.62 0.16 155);
+  --radius: 0.75rem;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, auto-hiding scrollbar — only appears when the container is actually scrolling. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover, *:focus-within {
+  scrollbar-color: var(--color-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.75 0 0);
+}

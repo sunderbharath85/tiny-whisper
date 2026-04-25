@@ -55,6 +55,9 @@ export default function App() {
         try {
           setSettings(await api.getSettings());
           setModels(await api.listModels());
+          try {
+            setLaunchAtLogin(await api.getAutostart());
+          } catch { /* plugin may not be registered yet; best-effort */ }
           break;
         } catch (e) {
           const msg = String(e);
@@ -277,7 +280,18 @@ export default function App() {
               <div className="text-sm font-medium">Launch at login</div>
               <div className="text-xs text-[var(--color-muted-foreground)]">Start Tiny Whisper when you log in</div>
             </div>
-            <Toggle checked={launchAtLogin} onChange={setLaunchAtLogin} />
+            <Toggle
+              checked={launchAtLogin}
+              onChange={async (v) => {
+                setLaunchAtLogin(v);
+                try {
+                  await api.setAutostart(v);
+                } catch (e) {
+                  setLaunchAtLogin(!v);
+                  console.error("setAutostart failed:", e);
+                }
+              }}
+            />
           </CardContent>
         </Card>
 

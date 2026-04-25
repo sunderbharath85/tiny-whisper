@@ -5,6 +5,7 @@ use crate::state::AppState;
 use crate::transcriber;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Serialize)]
 pub struct ModelStatus {
@@ -54,6 +55,21 @@ pub async fn download_model(
     let state = app.state::<AppState>();
     let dir = config::models_dir(&state.app_data_dir);
     models::download(app.clone(), &dir, id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let m = app.autolaunch();
+    if enabled {
+        m.enable().map_err(|e| e.to_string())
+    } else {
+        m.disable().map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]

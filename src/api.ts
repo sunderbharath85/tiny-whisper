@@ -40,6 +40,8 @@ export const api = {
   listModels: () => invoke<ModelStatus[]>("list_models"),
   downloadModel: (id: ModelId) => invoke<void>("download_model", { id }),
   deleteModel: (id: ModelId) => invoke<void>("delete_model", { id }),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   onDownloadProgress: (cb: (p: DownloadProgress) => void): Promise<UnlistenFn> =>
     listen<DownloadProgress>("model://progress", (e) => cb(e.payload)),
   onStatus: (cb: (s: AppStatus) => void): Promise<UnlistenFn> =>

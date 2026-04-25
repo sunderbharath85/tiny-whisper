@@ -36,6 +36,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide to tray instead of quitting the app.
@@ -51,6 +55,8 @@ fn main() {
             commands::list_models,
             commands::download_model,
             commands::delete_model,
+            commands::get_autostart,
+            commands::set_autostart,
         ])
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("app data dir");

@@ -47,7 +47,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "signCommand": "signtool sign /sha1 278AF2DF6531D16AE28C617248E3FF329C676BD9 /fd sha256 /tr http://timestamp.comodoca.com /td sha256 %1"
+    }
   },
   "plugins": {}
 }

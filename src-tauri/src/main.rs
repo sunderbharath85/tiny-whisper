@@ -6,6 +6,8 @@ mod hotkey;
 mod models;
 mod paster;
 mod recorder;
+mod session_worker;
+mod sessions;
 mod state;
 mod transcriber;
 mod vad;
@@ -57,6 +59,12 @@ fn main() {
             commands::delete_model,
             commands::get_autostart,
             commands::set_autostart,
+            commands::start_session_recording,
+            commands::stop_session_recording,
+            commands::list_sessions,
+            commands::delete_session,
+            commands::get_session_transcript,
+            commands::transcribe_session,
         ])
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("app data dir");
@@ -180,6 +188,12 @@ fn event_worker(app: AppHandle, rx: Receiver<RecorderEvent>) {
                         message: "recorder error".into(),
                     },
                 );
+            }
+            RecorderEvent::RawCaptureStarted => {
+                emit_status(&app, AppStatus::RecordingSession);
+            }
+            RecorderEvent::RawCaptureStopped => {
+                emit_status(&app, AppStatus::Idle);
             }
         }
     }

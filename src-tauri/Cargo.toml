@@ -29,11 +29,16 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 cpal = "0.15"
 rubato = "0.15"
+hound = "3.5"
 
 # whisper-rs. GPU backend is opt-in via the `gpu` cargo feature below so the
 # default CPU build doesn't require a Vulkan SDK. `use_gpu(bool)` on
 # WhisperContextParameters toggles at runtime when a GPU backend is compiled in.
 whisper-rs = { version = "0.16", default-features = false }
+
+# Parakeet ASR (CTC + TDT) via ONNX Runtime. CPU by default; the `gpu` feature
+# below enables DirectML on Windows so we can match whisper's GPU toggle.
+parakeet-rs = { version = "0.3", features = ["sortformer"] }
 
 [dependencies.arboard]
 version = "3"
@@ -46,4 +51,4 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 # Enable with `cargo tauri build --features gpu` (or `--features gpu` on cargo commands).
 # Requires the Vulkan SDK on Windows/Linux; uses Metal on macOS.
-gpu = ["whisper-rs/vulkan"]
+gpu = ["whisper-rs/vulkan", "parakeet-rs/directml"]

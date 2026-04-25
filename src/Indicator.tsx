@@ -2,17 +2,30 @@ import { type ReactElement, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Mic, Loader2, Radio } from "lucide-react";
 
+type StatusState =
+  | "idle"
+  | "listening"
+  | "speaking"
+  | "transcribing"
+  | "recording_session"
+  | "transcribing_session"
+  | "error";
+
 type Status = {
-  state: "idle" | "listening" | "speaking" | "transcribing" | "error";
+  state: StatusState;
   message?: string;
+  session_id?: string;
+  percent?: number;
 };
 
-const META: Record<Status["state"], { label: string; dot: string; icon: ReactElement }> = {
-  idle:         { label: "tiny-whisper",    dot: "bg-neutral-400",                   icon: <Mic className="h-3.5 w-3.5" /> },
-  listening:    { label: "listening",       dot: "bg-emerald-400 animate-pulse",     icon: <Radio className="h-3.5 w-3.5" /> },
-  speaking:     { label: "hearing you",     dot: "bg-amber-400 animate-pulse",       icon: <Mic className="h-3.5 w-3.5" /> },
-  transcribing: { label: "transcribing…",   dot: "bg-sky-400 animate-pulse",         icon: <Loader2 className="h-3.5 w-3.5 animate-spin" /> },
-  error:        { label: "error",           dot: "bg-red-500",                        icon: <Mic className="h-3.5 w-3.5" /> },
+const META: Record<StatusState, { label: string; dot: string; icon: ReactElement }> = {
+  idle:                 { label: "tiny-whisper",    dot: "bg-neutral-400",               icon: <Mic className="h-3.5 w-3.5" /> },
+  listening:            { label: "listening",       dot: "bg-emerald-400 animate-pulse", icon: <Radio className="h-3.5 w-3.5" /> },
+  speaking:             { label: "hearing you",     dot: "bg-amber-400 animate-pulse",   icon: <Mic className="h-3.5 w-3.5" /> },
+  transcribing:         { label: "transcribing…",   dot: "bg-sky-400 animate-pulse",     icon: <Loader2 className="h-3.5 w-3.5 animate-spin" /> },
+  recording_session:    { label: "recording",       dot: "bg-red-500 animate-pulse",     icon: <Radio className="h-3.5 w-3.5" /> },
+  transcribing_session: { label: "transcribing…",   dot: "bg-sky-400 animate-pulse",     icon: <Loader2 className="h-3.5 w-3.5 animate-spin" /> },
+  error:                { label: "error",           dot: "bg-red-500",                   icon: <Mic className="h-3.5 w-3.5" /> },
 };
 
 export default function Indicator() {
@@ -24,7 +37,12 @@ export default function Indicator() {
   }, []);
 
   const meta = META[status.state];
-  const label = status.state === "error" && status.message ? status.message : meta.label;
+  const label =
+    status.state === "error" && status.message
+      ? status.message
+      : status.state === "transcribing_session" && status.percent != null
+      ? `transcribing… ${status.percent.toFixed(0)}%`
+      : meta.label;
 
   return (
     <div className="h-screen w-screen flex items-center justify-center p-2">

@@ -1,8 +1,8 @@
+use super::Backend;
 use crate::config::{Device, ModelId};
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 struct Loaded {
@@ -11,25 +11,21 @@ struct Loaded {
     ctx: WhisperContext,
 }
 
-pub struct Transcriber {
-    inner: Arc<Mutex<Option<Loaded>>>,
+pub struct WhisperGgmlBackend {
+    inner: Mutex<Option<Loaded>>,
     models_dir: PathBuf,
 }
 
-impl Transcriber {
+impl WhisperGgmlBackend {
     pub fn new(models_dir: PathBuf) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(None)),
+            inner: Mutex::new(None),
             models_dir,
         }
     }
 
-    pub fn model_path(&self, model: ModelId) -> PathBuf {
-        self.models_dir.join(model.filename())
-    }
-
-    pub fn is_downloaded(&self, model: ModelId) -> bool {
-        self.model_path(model).exists()
+    pub fn unload(&self) {
+        *self.inner.lock() = None;
     }
 
     fn ensure_loaded(&self, model: ModelId, device: Device) -> Result<()> {
@@ -39,9 +35,13 @@ impl Transcriber {
                 return Ok(());
             }
         }
-        let path = self.model_path(model);
+        let file = model
+            .files()
+            .first()
+            .ok_or_else(|| anyhow!("whisper model has no files"))?;
+        let path = self.models_dir.join(file.filename);
         if !path.exists() {
-            return Err(anyhow!("model not downloaded: {}", model.filename()));
+            return Err(anyhow!("model not downloaded: {}", file.filename));
         }
         let mut params = WhisperContextParameters::default();
         params.use_gpu(matches!(device, Device::Gpu));
@@ -52,13 +52,10 @@ impl Transcriber {
         *guard = Some(Loaded { model, device, ctx });
         Ok(())
     }
+}
 
-    /// Unload the current model (e.g. before deleting its file).
-    pub fn unload(&self) {
-        *self.inner.lock() = None;
-    }
-
-    pub fn transcribe(
+impl Backend for WhisperGgmlBackend {
+    fn transcribe(
         &self,
         samples: &[f32],
         model: ModelId,
@@ -92,18 +89,14 @@ impl Transcriber {
         }
         Ok(out.trim().to_string())
     }
+
+    fn unload(&self) {
+        WhisperGgmlBackend::unload(self);
+    }
 }
 
 fn num_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).max(1))
         .unwrap_or(2)
-}
-
-pub fn delete_model_file(models_dir: &Path, model: ModelId) -> Result<()> {
-    let p = models_dir.join(model.filename());
-    if p.exists() {
-        std::fs::remove_file(p)?;
-    }
-    Ok(())
 }

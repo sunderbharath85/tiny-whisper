@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, type Settings, type ModelStatus, type ModelId, type AppStatus } from "./api";
+import { api, type Settings, type ModelStatus, type ModelId, type Engine, type AppStatus } from "./api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SessionsCard } from "@/components/SessionsCard";
 import {
   Check,
   Download,
@@ -16,23 +17,42 @@ import {
   Trash2,
 } from "lucide-react";
 
-type ModelMeta = { id: ModelId; label: string; sizeLabel: string };
+type ModelMeta = { id: ModelId; label: string; sizeLabel: string; engine: Engine };
 
 const MODELS: ModelMeta[] = [
-  { id: "tiny.en", label: "Tiny (English)", sizeLabel: "~75 MB" },
-  { id: "base.en", label: "Base (English)", sizeLabel: "~142 MB" },
-  { id: "small.en", label: "Small (English)", sizeLabel: "~466 MB" },
-  { id: "medium.en", label: "Medium (English)", sizeLabel: "~1.5 GB" },
-  { id: "large-v3", label: "Large v3", sizeLabel: "~2.9 GB" },
+  { id: "tiny.en", label: "Tiny (English)", sizeLabel: "~75 MB", engine: "whisper" },
+  { id: "base.en", label: "Base (English)", sizeLabel: "~142 MB", engine: "whisper" },
+  { id: "small.en", label: "Small (English)", sizeLabel: "~466 MB", engine: "whisper" },
+  { id: "medium.en", label: "Medium (English)", sizeLabel: "~1.5 GB", engine: "whisper" },
+  { id: "large-v3", label: "Large v3", sizeLabel: "~2.9 GB", engine: "whisper" },
+  { id: "parakeet-ctc-0.6b-en", label: "Parakeet CTC 0.6B (English)", sizeLabel: "~2.4 GB", engine: "parakeet" },
+  { id: "parakeet-tdt-0.6b-v3", label: "Parakeet TDT 0.6B v3 (25 lang)", sizeLabel: "~2.5 GB", engine: "parakeet" },
+  { id: "sortformer-4spk-v2", label: "Sortformer 4-speaker v2 (diarization)", sizeLabel: "~250 MB", engine: "diarizer" },
 ];
+
+const ENGINE_LABEL: Record<Engine, string> = {
+  whisper: "Whisper",
+  parakeet: "Parakeet",
+  diarizer: "Diarization",
+};
+
+const ENGINES: Engine[] = ["whisper", "parakeet", "diarizer"];
+
+/// Engines whose models are valid choices for the active dictation model.
+/// Diarization (sortformer) is downloaded separately and used only by sessions.
+const TRANSCRIPTION_ENGINES: Engine[] = ["whisper", "parakeet"];
 
 const STATUS_LABEL: Record<AppStatus["state"], string> = {
   idle: "Model Ready",
   listening: "Listening",
   speaking: "Hearing you",
   transcribing: "Transcribing…",
+  recording_session: "Recording",
+  transcribing_session: "Transcribing session…",
   error: "Error",
 };
+
+type Tab = "dictation" | "sessions";
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -44,6 +64,7 @@ export default function App() {
   const [lastTranscription] = useState<string>("");
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("dictation");
 
   useEffect(() => {
     (async () => {
@@ -128,12 +149,14 @@ export default function App() {
   const statusPillClass =
     status.state === "error"
       ? "bg-[var(--color-destructive)] text-white"
-      : status.state === "transcribing"
+      : status.state === "transcribing" || status.state === "transcribing_session"
       ? "bg-sky-600 text-white"
       : status.state === "speaking"
       ? "bg-amber-500 text-white"
       : status.state === "listening"
       ? "bg-emerald-600 text-white"
+      : status.state === "recording_session"
+      ? "bg-red-600 text-white"
       : "bg-[var(--color-accent)] text-[var(--color-accent-fg)]";
 
   return (
@@ -152,6 +175,21 @@ export default function App() {
             {STATUS_LABEL[status.state]}
           </span>
         </div>
+
+        {/* Tabs */}
+        <div className="flex items-center gap-1 rounded-[calc(var(--radius)-0.25rem)] bg-[var(--color-muted)] p-1">
+          <TabButton active={tab === "dictation"} onClick={() => setTab("dictation")}>
+            Dictation
+          </TabButton>
+          <TabButton active={tab === "sessions"} onClick={() => setTab("sessions")}>
+            Sessions
+          </TabButton>
+        </div>
+
+        {tab === "sessions" ? (
+          <SessionsCard status={status} />
+        ) : (
+          <>
 
         {/* Start/Stop — also reflects live status so the user sees transcription in progress */}
         <Button
@@ -187,15 +225,20 @@ export default function App() {
         {/* Models */}
         <Card>
           <CardContent className="pt-5 space-y-3">
-            <SectionHeader icon={<Download className="h-4 w-4" />} title="Whisper Models" subtitle="Download and select a model for local transcription" />
+            <SectionHeader icon={<Download className="h-4 w-4" />} title="Models" subtitle="Download and select a Whisper or Parakeet model" />
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
                 <div className="text-xs text-[var(--color-muted-foreground)]">Active Model</div>
                 <Select value={settings.model} onValueChange={(v) => update("model", v as ModelId)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {MODELS.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                    {TRANSCRIPTION_ENGINES.map((eng) => (
+                      <SelectGroup key={eng}>
+                        <SelectLabel>{ENGINE_LABEL[eng]}</SelectLabel>
+                        {MODELS.filter((m) => m.engine === eng).map((m) => (
+                          <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                        ))}
+                      </SelectGroup>
                     ))}
                   </SelectContent>
                 </Select>
@@ -211,40 +254,47 @@ export default function App() {
                 </Select>
               </div>
             </div>
-            <div className="space-y-2 pt-1">
-              {MODELS.map((m) => {
-                const dl = byId.get(m.id)?.downloaded ?? false;
-                const isDownloading = downloading === m.id;
-                return (
-                  <div
-                    key={m.id}
-                    className="flex items-center justify-between gap-3 rounded-[calc(var(--radius)-0.25rem)] border border-[var(--color-border)] px-3 py-2"
-                  >
-                    <div className="flex items-baseline gap-2 min-w-0">
-                      <span className="text-sm font-medium truncate">{m.label}</span>
-                      <span className="text-xs text-[var(--color-muted-foreground)]">{m.sizeLabel}</span>
-                    </div>
-                    {dl ? (
-                      <div className="flex items-center gap-1">
-                        <span className="inline-flex items-center gap-1 text-xs text-[var(--color-success)] px-2 py-1">
-                          <Check className="h-3.5 w-3.5" /> Ready
-                        </span>
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => remove(m.id)} aria-label="Delete model">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <Button variant="outline" size="sm" disabled={isDownloading} onClick={() => download(m.id)}>
-                        {isDownloading ? (
-                          <><Loader2 className="h-3.5 w-3.5 animate-spin" />{dlPct != null ? ` ${dlPct.toFixed(0)}%` : "…"}</>
-                        ) : (
-                          <><Download className="h-3.5 w-3.5" /> Get</>
-                        )}
-                      </Button>
-                    )}
+            <div className="space-y-3 pt-1">
+              {ENGINES.map((eng) => (
+                <div key={eng} className="space-y-2">
+                  <div className="text-[10px] font-semibold tracking-wider text-[var(--color-muted-foreground)] uppercase">
+                    {ENGINE_LABEL[eng]}
                   </div>
-                );
-              })}
+                  {MODELS.filter((m) => m.engine === eng).map((m) => {
+                    const dl = byId.get(m.id)?.downloaded ?? false;
+                    const isDownloading = downloading === m.id;
+                    return (
+                      <div
+                        key={m.id}
+                        className="flex items-center justify-between gap-3 rounded-[calc(var(--radius)-0.25rem)] border border-[var(--color-border)] px-3 py-2"
+                      >
+                        <div className="flex items-baseline gap-2 min-w-0">
+                          <span className="text-sm font-medium truncate">{m.label}</span>
+                          <span className="text-xs text-[var(--color-muted-foreground)]">{m.sizeLabel}</span>
+                        </div>
+                        {dl ? (
+                          <div className="flex items-center gap-1">
+                            <span className="inline-flex items-center gap-1 text-xs text-[var(--color-success)] px-2 py-1">
+                              <Check className="h-3.5 w-3.5" /> Ready
+                            </span>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => remove(m.id)} aria-label="Delete model">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button variant="outline" size="sm" disabled={isDownloading} onClick={() => download(m.id)}>
+                            {isDownloading ? (
+                              <><Loader2 className="h-3.5 w-3.5 animate-spin" />{dlPct != null ? ` ${dlPct.toFixed(0)}%` : "…"}</>
+                            ) : (
+                              <><Download className="h-3.5 w-3.5" /> Get</>
+                            )}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
@@ -261,15 +311,26 @@ export default function App() {
           </CardContent>
         </Card>
 
-        {/* Shortcut */}
+        {/* Shortcuts */}
         <Card>
-          <CardContent className="pt-5 space-y-2">
-            <SectionHeader icon={<Keyboard className="h-4 w-4" />} title="Shortcut" subtitle="Global keyboard shortcut" />
-            <Input
-              value={settings.hotkey}
-              onChange={(e) => update("hotkey", e.target.value)}
-              placeholder="CommandOrControl+Shift+Space"
-            />
+          <CardContent className="pt-5 space-y-3">
+            <SectionHeader icon={<Keyboard className="h-4 w-4" />} title="Shortcuts" subtitle="Global keyboard shortcuts" />
+            <div className="space-y-2">
+              <div className="text-xs text-[var(--color-muted-foreground)]">Dictation</div>
+              <Input
+                value={settings.hotkey}
+                onChange={(e) => update("hotkey", e.target.value)}
+                placeholder="CommandOrControl+Shift+Space"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs text-[var(--color-muted-foreground)]">Session record</div>
+              <Input
+                value={settings.session_hotkey}
+                onChange={(e) => update("session_hotkey", e.target.value)}
+                placeholder="CommandOrControl+Shift+R"
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -312,11 +373,38 @@ export default function App() {
           </CardContent>
         </Card>
 
+          </>
+        )}
+
         {status.state === "error" && status.message && (
           <div className="text-xs text-[var(--color-destructive)]">{status.message}</div>
         )}
       </div>
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex-1 h-8 rounded-[calc(var(--radius)-0.5rem)] text-xs font-medium transition-colors ${
+        active
+          ? "bg-[var(--color-background)] shadow-sm text-[var(--color-foreground)]"
+          : "text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

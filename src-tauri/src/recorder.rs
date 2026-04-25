@@ -12,6 +12,11 @@ pub const TARGET_SR: u32 = 16_000;
 pub enum Cmd {
     StartSession,
     StopSession,
+    /// Begin a raw 16kHz mono capture, forwarding chunks to `tx`. Mutually
+    /// exclusive with VAD-driven dictation; the recorder will refuse the
+    /// command if a dictation session is already active.
+    StartRawCapture(Sender<WavMsg>),
+    StopRawCapture,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -20,11 +25,20 @@ pub enum RecorderEvent {
     Listening,     // VAD idle, waiting for speech
     SpeechStarted, // VAD detected speech
     SessionStopped,
+    /// Raw capture started (used by the session-recording feature).
+    RawCaptureStarted,
+    RawCaptureStopped,
     Error,
 }
 
 /// A completed phrase ready to transcribe, in 16kHz mono f32.
 pub type Segment = Vec<f32>;
+
+/// Messages sent to a session writer thread that owns a WavWriter.
+pub enum WavMsg {
+    Chunk(Vec<f32>),
+    Stop,
+}
 
 pub struct Recorder {
     cmd_tx: Sender<Cmd>,
@@ -52,6 +66,31 @@ impl Recorder {
             .map_err(|e| anyhow!("{e}"))?;
         Ok(())
     }
+
+    pub fn start_raw_capture(&self, tx: Sender<WavMsg>) -> Result<()> {
+        self.cmd_tx
+            .send(Cmd::StartRawCapture(tx))
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    pub fn stop_raw_capture(&self) -> Result<()> {
+        self.cmd_tx
+            .send(Cmd::StopRawCapture)
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
+    }
+}
+
+enum SessionMode {
+    /// VAD-driven dictation — splits audio into phrases on silence.
+    Vad {
+        vad: Vad,
+        phrase: Vec<f32>,
+        pre_roll: Vec<f32>,
+    },
+    /// Raw capture — stream every 16kHz mono frame to `tx`.
+    Raw { tx: Sender<WavMsg> },
 }
 
 struct Session {
@@ -60,12 +99,8 @@ struct Session {
     sample_rate: u32,
     channels: u16,
     cursor: usize, // next unread sample index in raw buffer
-    // Resampled-but-unsegmented samples (16kHz mono).
     pending_16k: Vec<f32>,
-    vad: Vad,
-    // Samples accumulated for the current phrase (16kHz mono).
-    phrase: Vec<f32>,
-    pre_roll: Vec<f32>, // last few frames kept to prepend at speech start
+    mode: SessionMode,
 }
 
 const PRE_ROLL_FRAMES: usize = 5; // 150ms pre-roll prepended to phrase start
@@ -76,7 +111,11 @@ fn run(cmd_rx: Receiver<Cmd>, seg_tx: Sender<Segment>, evt_tx: Sender<RecorderEv
         match cmd_rx.try_recv() {
             Ok(Cmd::StartSession) => {
                 if session.is_none() {
-                    match start_session() {
+                    match start_session(SessionMode::Vad {
+                        vad: Vad::default(),
+                        phrase: Vec::new(),
+                        pre_roll: Vec::with_capacity(PRE_ROLL_FRAMES * FRAME_SAMPLES_16K),
+                    }) {
                         Ok(s) => {
                             session = Some(s);
                             let _ = evt_tx.send(RecorderEvent::SessionStarted);
@@ -91,13 +130,42 @@ fn run(cmd_rx: Receiver<Cmd>, seg_tx: Sender<Segment>, evt_tx: Sender<RecorderEv
             }
             Ok(Cmd::StopSession) => {
                 if let Some(mut s) = session.take() {
-                    // Drain any remaining phrase as a final segment.
                     drain_tick(&mut s, &seg_tx, &evt_tx);
-                    if !s.phrase.is_empty() {
-                        let final_seg = std::mem::take(&mut s.phrase);
-                        let _ = seg_tx.send(final_seg);
+                    if let SessionMode::Vad { phrase, .. } = &mut s.mode {
+                        if !phrase.is_empty() {
+                            let final_seg = std::mem::take(phrase);
+                            let _ = seg_tx.send(final_seg);
+                        }
                     }
                     let _ = evt_tx.send(RecorderEvent::SessionStopped);
+                }
+            }
+            Ok(Cmd::StartRawCapture(tx)) => {
+                if session.is_some() {
+                    log::warn!("ignoring StartRawCapture: a session is already active");
+                    let _ = tx.send(WavMsg::Stop);
+                } else {
+                    match start_session(SessionMode::Raw { tx: tx.clone() }) {
+                        Ok(s) => {
+                            session = Some(s);
+                            let _ = evt_tx.send(RecorderEvent::RawCaptureStarted);
+                        }
+                        Err(e) => {
+                            log::error!("start_raw_capture: {e}");
+                            let _ = tx.send(WavMsg::Stop);
+                            let _ = evt_tx.send(RecorderEvent::Error);
+                        }
+                    }
+                }
+            }
+            Ok(Cmd::StopRawCapture) => {
+                if let Some(mut s) = session.take() {
+                    // Drain any tail samples and notify writer.
+                    drain_tick(&mut s, &seg_tx, &evt_tx);
+                    if let SessionMode::Raw { tx } = &s.mode {
+                        let _ = tx.send(WavMsg::Stop);
+                    }
+                    let _ = evt_tx.send(RecorderEvent::RawCaptureStopped);
                 }
             }
             Err(TryRecvError::Disconnected) => return,
@@ -111,7 +179,7 @@ fn run(cmd_rx: Receiver<Cmd>, seg_tx: Sender<Segment>, evt_tx: Sender<RecorderEv
     }
 }
 
-fn start_session() -> Result<Session> {
+fn start_session(mode: SessionMode) -> Result<Session> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -160,9 +228,7 @@ fn start_session() -> Result<Session> {
         channels,
         cursor: 0,
         pending_16k: Vec::new(),
-        vad: Vad::default(),
-        phrase: Vec::new(),
-        pre_roll: Vec::with_capacity(PRE_ROLL_FRAMES * FRAME_SAMPLES_16K),
+        mode,
     })
 }
 
@@ -181,7 +247,6 @@ fn drain_tick(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<Recorde
         return;
     }
 
-    // Downmix to mono, resample to 16kHz, append to pending.
     let mono = to_mono(&new_raw, s.channels);
     let mono_16k = if s.sample_rate == TARGET_SR {
         mono
@@ -194,48 +259,47 @@ fn drain_tick(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<Recorde
             }
         }
     };
-    s.pending_16k.extend_from_slice(&mono_16k);
 
-    // Consume complete 480-sample frames through VAD.
-    while s.pending_16k.len() >= FRAME_SAMPLES_16K {
-        let frame: Vec<f32> = s.pending_16k.drain(..FRAME_SAMPLES_16K).collect();
-        if s.vad_is_speaking() {
-            s.phrase.extend_from_slice(&frame);
-        } else {
-            // Maintain pre-roll ring.
-            s.pre_roll.extend_from_slice(&frame);
-            let cap = PRE_ROLL_FRAMES * FRAME_SAMPLES_16K;
-            if s.pre_roll.len() > cap {
-                let drop = s.pre_roll.len() - cap;
-                s.pre_roll.drain(..drop);
-            }
+    match &mut s.mode {
+        SessionMode::Raw { tx } => {
+            // Forward as-is. No frame alignment requirement.
+            let _ = tx.send(WavMsg::Chunk(mono_16k));
         }
-        match s.vad.process_frame(&frame) {
-            Some(crate::vad::Event::SpeechStarted) => {
-                // Prepend pre-roll to start of phrase (speech frames weren't added yet
-                // during Idle; the transition frame itself needs to be in phrase too).
-                let mut seeded = s.pre_roll.clone();
-                seeded.extend_from_slice(&frame);
-                s.phrase = seeded;
-                s.pre_roll.clear();
-                let _ = evt_tx.send(RecorderEvent::SpeechStarted);
-            }
-            Some(crate::vad::Event::SpeechEnded)
-            | Some(crate::vad::Event::MaxLenReached) => {
-                let seg = std::mem::take(&mut s.phrase);
-                if !seg.is_empty() {
-                    let _ = seg_tx.send(seg);
+        SessionMode::Vad { vad, phrase, pre_roll } => {
+            s.pending_16k.extend_from_slice(&mono_16k);
+            while s.pending_16k.len() >= FRAME_SAMPLES_16K {
+                let frame: Vec<f32> = s.pending_16k.drain(..FRAME_SAMPLES_16K).collect();
+                let speaking = !phrase.is_empty();
+                if speaking {
+                    phrase.extend_from_slice(&frame);
+                } else {
+                    pre_roll.extend_from_slice(&frame);
+                    let cap = PRE_ROLL_FRAMES * FRAME_SAMPLES_16K;
+                    if pre_roll.len() > cap {
+                        let drop = pre_roll.len() - cap;
+                        pre_roll.drain(..drop);
+                    }
                 }
-                let _ = evt_tx.send(RecorderEvent::Listening);
+                match vad.process_frame(&frame) {
+                    Some(crate::vad::Event::SpeechStarted) => {
+                        let mut seeded = pre_roll.clone();
+                        seeded.extend_from_slice(&frame);
+                        *phrase = seeded;
+                        pre_roll.clear();
+                        let _ = evt_tx.send(RecorderEvent::SpeechStarted);
+                    }
+                    Some(crate::vad::Event::SpeechEnded)
+                    | Some(crate::vad::Event::MaxLenReached) => {
+                        let seg = std::mem::take(phrase);
+                        if !seg.is_empty() {
+                            let _ = seg_tx.send(seg);
+                        }
+                        let _ = evt_tx.send(RecorderEvent::Listening);
+                    }
+                    None => {}
+                }
             }
-            None => {}
         }
-    }
-}
-
-impl Session {
-    fn vad_is_speaking(&self) -> bool {
-        !self.phrase.is_empty()
     }
 }
 

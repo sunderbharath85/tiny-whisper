@@ -5,6 +5,14 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::SystemTime;
+
+#[derive(Clone)]
+#[allow(dead_code)] // populated for invariant tracking + future UI surfacing
+pub struct ActiveSession {
+    pub id: String,
+    pub started_at: SystemTime,
+}
 
 pub struct AppState {
     pub app_data_dir: PathBuf,
@@ -12,6 +20,8 @@ pub struct AppState {
     pub recorder: Arc<Recorder>,
     pub transcriber: Arc<Transcriber>,
     pub is_recording: Arc<AtomicBool>,
+    /// Set while a session recording is active.
+    pub active_session: Arc<Mutex<Option<ActiveSession>>>,
 }
 
 impl AppState {
@@ -27,6 +37,7 @@ impl AppState {
             recorder: Arc::new(recorder),
             transcriber: Arc::new(transcriber),
             is_recording: Arc::new(AtomicBool::new(false)),
+            active_session: Arc::new(Mutex::new(None)),
         }
     }
 }

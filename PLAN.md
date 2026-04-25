@@ -1,7 +1,10 @@
 # tiny-whisper — feature plan
 
 Current state: working MVP with VAD-based live transcribe, floating indicator pill,
-CPU-only whisper (small.en default), toggle hotkey (Ctrl+Shift+Space).
+CPU-only whisper (small.en default), toggle hotkey (Ctrl+Shift+Space). Now also
+supports recorded sessions (separate hotkey, WAV stored under `app_data/sessions/`)
+with optional Sortformer speaker diarization, plus Parakeet CTC/TDT as
+alternative ASR backends via parakeet-rs + ort.
 
 ## Top priorities (pick first)
 

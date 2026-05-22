@@ -215,14 +215,24 @@ fn segment_worker(app: AppHandle, rx: Receiver<Segment>) {
         );
         match result {
             Ok(text) if !text.trim().is_empty() && text.trim() != "[BLANK_AUDIO]" => {
-                if let Err(e) = paster::paste(&(text.trim().to_string() + " ")) {
-                    emit_status(
-                        &app,
-                        AppStatus::Error {
-                            message: e.to_string(),
-                        },
-                    );
-                }
+                let paste_text = text.trim().to_string() + " ";
+                let app_clone = app.clone();
+                // Clipboard write + 30 ms delay stay on a background thread so the
+                // main event loop isn't blocked. Only key injection is dispatched to
+                // the main thread — TSMGetInputSourceProperty (inside enigo) asserts
+                // it runs on the main dispatch queue on macOS.
+                std::thread::spawn(move || {
+                    if let Err(e) = paster::prepare(&paste_text) {
+                        emit_status(&app_clone, AppStatus::Error { message: e.to_string() });
+                        return;
+                    }
+                    let app_clone2 = app_clone.clone();
+                    let _ = app_clone.run_on_main_thread(move || {
+                        if let Err(e) = paster::inject_keys() {
+                            emit_status(&app_clone2, AppStatus::Error { message: e.to_string() });
+                        }
+                    });
+                });
             }
             Err(e) => {
                 emit_status(

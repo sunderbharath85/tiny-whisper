@@ -1,0 +1,4 @@
+[env]
+# std::filesystem (used by ggml-backend-reg.cpp in whisper.cpp) requires macOS 10.15.
+# whisper-rs-sys passes this through to cmake's -mmacosx-version-min flag.
+MACOSX_DEPLOYMENT_TARGET = "10.15"

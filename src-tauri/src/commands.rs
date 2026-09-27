@@ -30,14 +30,28 @@ pub fn save_settings(
     state: State<'_, AppState>,
     settings: Settings,
 ) -> Result<(), String> {
-    config::save(&state.app_data_dir, &settings).map_err(|e| e.to_string())?;
-    // Re-register hotkey if changed.
-    let prev_hotkey = state.settings.lock().hotkey.clone();
-    *state.settings.lock() = settings.clone();
-    if prev_hotkey != settings.hotkey {
-        hotkey::register(&app, &settings).map_err(|e| e.to_string())?;
+    let prev = state.settings.lock().clone();
+    // Parse both hotkeys before unregistering anything, and save only once the
+    // new ones are registered, so a bad value changes nothing (C-04, C-12).
+    let change = hotkey::plan_hotkey_change(&prev, &settings, hotkey::is_registered(&app, &prev))?;
+    if let Some(keys) = change {
+        hotkey::apply(&app, &prev, &settings, keys)?;
     }
+    if let Err(e) = config::save(&state.app_data_dir, &settings) {
+        if change.is_some() {
+            hotkey::restore(&app, &prev);
+        }
+        return Err(format!("Could not save settings: {e}"));
+    }
+    *state.settings.lock() = settings;
     Ok(())
+}
+
+/// Returns and clears the error from boot (hotkey registration), which happens
+/// before the UI is listening for status events.
+#[tauri::command]
+pub fn take_startup_error(state: State<'_, AppState>) -> Option<String> {
+    state.startup_error.lock().take()
 }
 
 #[tauri::command]

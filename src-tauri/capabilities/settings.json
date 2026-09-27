@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Settings window: status events and the app commands. Every command in build.rs COMMANDS is granted here.",
+  "windows": ["settings"],
+  "permissions": [
+    "core:event:default",
+    "allow-get-settings",
+    "allow-save-settings",
+    "allow-list-models",
+    "allow-download-model",
+    "allow-delete-model",
+    "allow-get-autostart",
+    "allow-set-autostart",
+    "allow-start-session-recording",
+    "allow-stop-session-recording",
+    "allow-list-sessions",
+    "allow-delete-session",
+    "allow-get-session-transcript",
+    "allow-transcribe-session",
+    "allow-take-startup-error"
+  ]
+}

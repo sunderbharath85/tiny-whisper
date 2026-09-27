@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "indicator",
+  "description": "Indicator window: it only listens for app://status events, so it gets events and nothing else (no app commands).",
+  "windows": ["indicator"],
+  "permissions": ["core:event:default"]
+}

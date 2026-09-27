@@ -151,6 +151,8 @@ pub fn transcribe_session(
     id: String,
     diarize: bool,
 ) -> Result<(), String> {
+    // Reject a bad id here so the caller gets the error, not the worker thread.
+    sessions::validate_session_id(&id).map_err(|e| e.to_string())?;
     session_worker::spawn_transcriber(app, id, diarize);
     Ok(())
 }

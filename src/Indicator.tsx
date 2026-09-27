@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Mic, Loader2, Radio } from "lucide-react";
 
@@ -28,14 +28,34 @@ const META: Record<StatusState, { label: string; dot: string; icon: ReactElement
   error:                { label: "error",           dot: "bg-red-500",                   icon: <Mic className="h-3.5 w-3.5" /> },
 };
 
+/// How long an error stays on the pill even if other statuses arrive (K6).
+const ERROR_HOLD_MS = 5000;
+
 export default function Indicator() {
-  const [status, setStatus] = useState<Status>({ state: "listening" });
+  const [latest, setLatest] = useState<Status>({ state: "listening" });
+  const [heldError, setHeldError] = useState<string | null>(null);
+  const holdTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    const off = listen<Status>("app://status", (e) => setStatus(e.payload));
-    return () => { off.then((f) => f()); };
+    const off = listen<Status>("app://status", (e) => {
+      setLatest(e.payload);
+      if (e.payload.state === "error") {
+        // Show the error for ERROR_HOLD_MS, then resume the latest status.
+        setHeldError(e.payload.message ?? "");
+        if (holdTimer.current != null) window.clearTimeout(holdTimer.current);
+        holdTimer.current = window.setTimeout(() => {
+          holdTimer.current = null;
+          setHeldError(null);
+        }, ERROR_HOLD_MS);
+      }
+    });
+    return () => {
+      off.then((f) => f());
+      if (holdTimer.current != null) window.clearTimeout(holdTimer.current);
+    };
   }, []);
 
+  const status: Status = heldError != null ? { state: "error", message: heldError } : latest;
   const meta = META[status.state];
   const label =
     status.state === "error" && status.message

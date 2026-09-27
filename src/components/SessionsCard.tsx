@@ -50,16 +50,21 @@ export function SessionsCard({ status, runAction, reportError }: Props) {
       .listSessions()
       .then((s) => alive && setSessions(s))
       .catch((e) => alive && reportError(`Could not load sessions: ${errorMessage(e)}`));
-    const off = api.onSessionUpdated((m) => {
-      setSessions((prev) => {
-        const next = prev.filter((p) => p.id !== m.id);
-        next.unshift(m);
-        return next;
+    const off = api
+      .onSessionUpdated((m) => {
+        setSessions((prev) => {
+          const next = prev.filter((p) => p.id !== m.id);
+          next.unshift(m);
+          return next;
+        });
+      })
+      .catch((e): undefined => {
+        reportError(`Could not listen for session updates: ${errorMessage(e)}`);
+        return undefined;
       });
-    });
     return () => {
       alive = false;
-      off.then((f) => f());
+      off.then((f) => f?.());
     };
   }, [reportError]);
 

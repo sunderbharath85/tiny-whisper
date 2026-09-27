@@ -112,18 +112,26 @@ export default function App() {
       }
     })();
     const offUnexpected = setUnexpectedSink(report);
-    const offStatus = api.onStatus((s) => {
-      setStatus(s);
-      // Kept in the error area after the status moves on (K6).
-      if (s.state === "error") report(s.message || "Something went wrong (no details given).");
-    });
-    const offProgress = api.onDownloadProgress((p) => {
-      setDlPct(p.total_bytes > 0 ? (p.downloaded_bytes / p.total_bytes) * 100 : null);
-    });
+    const listenFailed = (what: string) => (e: unknown): undefined => {
+      report(`Could not listen for ${what}: ${errorMessage(e)}`);
+      return undefined;
+    };
+    const offStatus = api
+      .onStatus((s) => {
+        setStatus(s);
+        // Kept in the error area after the status moves on (K6).
+        if (s.state === "error") report(s.message || "Something went wrong (no details given).");
+      })
+      .catch(listenFailed("status updates"));
+    const offProgress = api
+      .onDownloadProgress((p) => {
+        setDlPct(p.total_bytes > 0 ? (p.downloaded_bytes / p.total_bytes) * 100 : null);
+      })
+      .catch(listenFailed("download progress"));
     return () => {
       offUnexpected();
-      offStatus.then((f) => f());
-      offProgress.then((f) => f());
+      offStatus.then((f) => f?.());
+      offProgress.then((f) => f?.());
     };
   }, []);
 

@@ -118,14 +118,15 @@ fn run_transcriber(app: &AppHandle, session_id: &str, diarize: bool) -> Result<(
     let app_data = state.app_data_dir.clone();
     let settings: Settings = state.settings.lock().clone();
 
+    let active_model: ModelId = settings.model;
+    let device: Device = settings.device;
+    check_models(&state.transcriber, active_model, diarize)?;
+
     let wav_path = audio_path(&app_data, session_id)?;
     if !wav_path.exists() {
         return Err(anyhow!("audio missing: {}", wav_path.display()));
     }
     let samples = read_wav_16k_mono(&wav_path)?;
-
-    let active_model: ModelId = settings.model;
-    let device: Device = settings.device;
 
     emit_progress(app, session_id, 0.0);
 
@@ -144,7 +145,8 @@ fn run_transcriber(app: &AppHandle, session_id: &str, diarize: bool) -> Result<(
     let merged = merge_turns(&turns, 0.3);
 
     // 2. Transcribe each turn with the active model.
-    let mut segments: Vec<TranscriptSegment> = Vec::with_capacity(merged.len());
+    let mut done: Vec<&SpeakerTurn> = Vec::with_capacity(merged.len());
+    let mut results: Vec<TurnText> = Vec::with_capacity(merged.len());
     for (i, t) in merged.iter().enumerate() {
         let start_idx = (t.start_secs * SAMPLE_RATE as f32) as usize;
         let end_idx = ((t.end_secs * SAMPLE_RATE as f32) as usize).min(samples.len());
@@ -153,23 +155,38 @@ fn run_transcriber(app: &AppHandle, session_id: &str, diarize: bool) -> Result<(
         }
         let slice = &samples[start_idx..end_idx];
         // Whisper rejects sub-100ms inputs; let it skip those silently.
-        let text = if slice.len() < 1600 {
-            String::new()
+        let result = if slice.len() < MIN_TURN_SAMPLES {
+            TurnText::TooShort
         } else {
-            state
+            match state
                 .transcriber
                 .transcribe(slice, active_model, device, &settings.language)
-                .unwrap_or_default()
+            {
+                Ok(text) => TurnText::Text(text),
+                Err(e) => {
+                    log::warn!("session {session_id}: turn at {:.1}s failed: {e}", t.start_secs);
+                    TurnText::Failed(e.to_string())
+                }
+            }
         };
-        segments.push(TranscriptSegment {
-            start_secs: t.start_secs,
-            end_secs: t.end_secs,
-            speaker: if diarize { Some(t.speaker_id) } else { None },
-            text: text.trim().to_string(),
-        });
+        done.push(t);
+        results.push(result);
         let pct = (i + 1) as f32 / merged.len().max(1) as f32 * 100.0;
         emit_progress(app, session_id, pct);
     }
+    // Nothing is written when every turn failed, so an existing transcript
+    // and has_transcript stay as they were.
+    let texts = turn_texts(&results).map_err(|e| anyhow!(e))?;
+    let segments: Vec<TranscriptSegment> = done
+        .iter()
+        .zip(texts)
+        .map(|(t, text)| TranscriptSegment {
+            start_secs: t.start_secs,
+            end_secs: t.end_secs,
+            speaker: if diarize { Some(t.speaker_id) } else { None },
+            text,
+        })
+        .collect();
 
     // 3. Persist transcript and updated meta.
     let transcript = Transcript {
@@ -198,6 +215,84 @@ fn run_transcriber(app: &AppHandle, session_id: &str, diarize: bool) -> Result<(
     let _ = app.emit("session://updated", &meta);
     emit_status(app, AppStatus::Idle);
     Ok(())
+}
+
+/// Turns shorter than this (100 ms) are not sent to the model.
+const MIN_TURN_SAMPLES: usize = 1600;
+
+/// What transcribing one speaker turn produced.
+#[derive(Debug)]
+enum TurnText {
+    /// Under `MIN_TURN_SAMPLES`, left blank.
+    TooShort,
+    Text(String),
+    Failed(String),
+}
+
+/// The transcript text for each turn. A failed turn is marked in its text so
+/// the rest of the transcript is kept. If every turn long enough to
+/// transcribe failed, this is an error instead of a blank transcript (C-16).
+fn turn_texts(results: &[TurnText]) -> Result<Vec<String>, String> {
+    let attempted = results
+        .iter()
+        .filter(|r| !matches!(r, TurnText::TooShort))
+        .count();
+    let failed: Vec<&str> = results
+        .iter()
+        .filter_map(|r| match r {
+            TurnText::Failed(e) => Some(e.as_str()),
+            _ => None,
+        })
+        .collect();
+    if attempted > 0 && failed.len() == attempted {
+        return Err(if attempted == 1 {
+            failed[0].to_string()
+        } else {
+            format!("all {attempted} segments failed; first error: {}", failed[0])
+        });
+    }
+    Ok(results
+        .iter()
+        .map(|r| match r {
+            TurnText::TooShort => String::new(),
+            TurnText::Text(text) => text.trim().to_string(),
+            TurnText::Failed(e) => format!("[transcription failed: {e}]"),
+        })
+        .collect())
+}
+
+/// The models a session transcription needs that are not downloaded, as the
+/// error to show: the active model, and Sortformer when diarizing.
+fn missing_models(
+    model: ModelId,
+    diarize: bool,
+    is_downloaded: impl Fn(ModelId) -> bool,
+) -> Option<String> {
+    let mut missing = Vec::new();
+    if !is_downloaded(model) {
+        missing.push(crate::hotkey::model_not_downloaded(model));
+    }
+    let diarizer = ModelId::Sortformer4SpkV2;
+    if diarize && !is_downloaded(diarizer) {
+        missing.push(format!(
+            "Speaker model \"{}\" is not downloaded. Download it in Settings → Models, or untick \"Diarize speakers\".",
+            crate::hotkey::model_name(diarizer)
+        ));
+    }
+    (!missing.is_empty()).then(|| missing.join(" "))
+}
+
+/// Fail before any work if a model the transcription needs is missing. Also
+/// called by the `transcribe_session` command so the UI gets the error.
+pub fn check_models(
+    transcriber: &crate::transcriber::Transcriber,
+    model: ModelId,
+    diarize: bool,
+) -> Result<()> {
+    match missing_models(model, diarize, |m| transcriber.is_downloaded(m)) {
+        Some(message) => Err(anyhow!(message)),
+        None => Ok(()),
+    }
 }
 
 fn emit_progress(app: &AppHandle, session_id: &str, percent: f32) {
@@ -279,4 +374,68 @@ fn unix_to_ymdhms(t: i64) -> (i32, u32, u32, u32, u32, u32) {
     let mo = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mo <= 2 { y + 1 } else { y };
     (y, mo, d, h, mi, s)
+}
+
+#[cfg(test)]
+mod transcriber_tests {
+    use super::*;
+
+    fn text(s: &str) -> TurnText {
+        TurnText::Text(s.into())
+    }
+
+    fn failed(s: &str) -> TurnText {
+        TurnText::Failed(s.into())
+    }
+
+    #[test]
+    fn successful_turns_are_trimmed_and_short_ones_blank() {
+        let texts = turn_texts(&[text(" hello "), TurnText::TooShort, text("world")]).unwrap();
+        assert_eq!(texts, vec!["hello", "", "world"]);
+    }
+
+    #[test]
+    fn partial_failures_are_marked_in_place() {
+        let texts = turn_texts(&[text("hello"), failed("model load: boom"), TurnText::TooShort]).unwrap();
+        assert_eq!(texts, vec!["hello", "[transcription failed: model load: boom]", ""]);
+    }
+
+    #[test]
+    fn every_attempted_turn_failing_is_an_error() {
+        assert_eq!(turn_texts(&[failed("boom")]), Err("boom".to_string()));
+        // Too-short turns are not attempts, so they don't rescue the result.
+        let err = turn_texts(&[failed("a"), TurnText::TooShort, failed("b")]).unwrap_err();
+        assert_eq!(err, "all 2 segments failed; first error: a");
+    }
+
+    #[test]
+    fn nothing_long_enough_to_transcribe_is_not_an_error() {
+        assert_eq!(turn_texts(&[]), Ok(vec![]));
+        assert_eq!(turn_texts(&[TurnText::TooShort]), Ok(vec![String::new()]));
+    }
+
+    #[test]
+    fn missing_active_model_is_reported() {
+        let msg = missing_models(ModelId::SmallEn, false, |_| false).unwrap();
+        assert_eq!(
+            msg,
+            "Model \"small.en\" is not downloaded. Open Settings → Models to download it."
+        );
+        assert_eq!(missing_models(ModelId::SmallEn, false, |_| true), None);
+    }
+
+    #[test]
+    fn sortformer_is_needed_only_when_diarizing() {
+        let only_small = |m: ModelId| m == ModelId::SmallEn;
+        assert_eq!(missing_models(ModelId::SmallEn, false, only_small), None);
+        let msg = missing_models(ModelId::SmallEn, true, only_small).unwrap();
+        assert!(msg.starts_with("Speaker model \"sortformer-4spk-v2\" is not downloaded."), "{msg}");
+        assert!(msg.contains("untick \"Diarize speakers\""), "{msg}");
+    }
+
+    #[test]
+    fn both_missing_models_are_named() {
+        let msg = missing_models(ModelId::BaseEn, true, |_| false).unwrap();
+        assert!(msg.contains("\"base.en\"") && msg.contains("\"sortformer-4spk-v2\""), "{msg}");
+    }
 }

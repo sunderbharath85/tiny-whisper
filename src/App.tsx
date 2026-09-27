@@ -5,6 +5,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SessionsCard } from "@/components/SessionsCard";
+import { HotkeyCapture } from "@/components/HotkeyCapture";
+import { Label } from "@/components/ui/label";
 import {
   Check,
   Download,
@@ -316,19 +318,19 @@ export default function App() {
           <CardContent className="pt-5 space-y-3">
             <SectionHeader icon={<Keyboard className="h-4 w-4" />} title="Shortcuts" subtitle="Global keyboard shortcuts" />
             <div className="space-y-2">
-              <div className="text-xs text-[var(--color-muted-foreground)]">Dictation</div>
-              <Input
+              <Label id="hotkey-dictation-label" htmlFor="hotkey-dictation" className="font-normal">Dictation</Label>
+              <HotkeyCapture
+                id="hotkey-dictation"
                 value={settings.hotkey}
-                onChange={(e) => update("hotkey", e.target.value)}
-                placeholder="CommandOrControl+Shift+Space"
+                onChange={(v) => update("hotkey", v)}
               />
             </div>
             <div className="space-y-2">
-              <div className="text-xs text-[var(--color-muted-foreground)]">Session record</div>
-              <Input
+              <Label id="hotkey-session-label" htmlFor="hotkey-session" className="font-normal">Session record</Label>
+              <HotkeyCapture
+                id="hotkey-session"
                 value={settings.session_hotkey}
-                onChange={(e) => update("session_hotkey", e.target.value)}
-                placeholder="CommandOrControl+Shift+R"
+                onChange={(v) => update("session_hotkey", v)}
               />
             </div>
           </CardContent>

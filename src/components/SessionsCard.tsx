@@ -134,7 +134,7 @@ export function SessionsCard({ status, runAction, reportError }: Props) {
         const t = await api.getSessionTranscript(s.id);
         setTranscripts((prev) => ({ ...prev, [s.id]: t }));
       });
-      // Collapse instead of leaving the row stuck on "Loading…".
+      // Collapse instead of leaving the row stuck on "Loading...".
       if (!ok) setExpanded((cur) => (cur === s.id ? null : cur));
     }
   }

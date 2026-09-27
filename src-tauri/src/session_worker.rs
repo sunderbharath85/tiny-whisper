@@ -14,15 +14,24 @@ use crate::recorder::WavMsg;
 use crate::sessions::{
     self, audio_path, session_dir, SessionMeta, Transcript, TranscriptSegment,
 };
-use crate::state::AppState;
+use crate::state::{ActiveSession, AppState};
 use crate::transcriber::SpeakerTurn;
 use anyhow::{anyhow, Result};
+use parking_lot::{Condvar, Mutex};
 use std::path::Path;
-use std::sync::mpsc::Receiver;
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 
 const SAMPLE_RATE: u32 = 16_000;
+
+/// How often the writer rewrites the WAV header while recording, so a killed
+/// process still leaves a playable file (C-02).
+const FLUSH_EVERY: Duration = Duration::from_secs(1);
+/// How long quitting waits for an active recording to finish (5.1).
+const EXIT_WAIT: Duration = Duration::from_secs(3);
 
 /// Spawn a writer thread for an in-progress recording.
 pub fn spawn_writer(
@@ -31,30 +40,69 @@ pub fn spawn_writer(
     session_id: String,
     started_at: SystemTime,
 ) {
+    let state = app.state::<AppState>();
+    let app_data = state.app_data_dir.clone();
+    let release = ReleaseSession {
+        id: session_id.clone(),
+        active: state.active_session.clone(),
+        ended: state.session_ended.clone(),
+    };
     std::thread::spawn(move || {
-        if let Err(e) = run_writer(&app, rx, &session_id, started_at) {
-            log::error!("session writer ({session_id}) failed: {e}");
-            emit_status(
-                &app,
-                AppStatus::Error {
-                    message: format!("session write failed: {e}"),
-                },
-            );
+        match write_session(&app_data, rx, &session_id, started_at, release) {
+            Ok(meta) => {
+                let _ = app.emit("session://updated", &meta);
+            }
+            Err(e) => {
+                log::error!("session writer ({session_id}) failed: {e}");
+                emit_status(
+                    &app,
+                    AppStatus::Error {
+                        message: format!("session write failed: {e}"),
+                    },
+                );
+                // Show whatever part of the recording was salvaged.
+                if let Ok(meta) = sessions::read_meta(&app_data, &session_id) {
+                    if !meta.in_progress {
+                        let _ = app.emit("session://updated", &meta);
+                    }
+                }
+            }
         }
     });
 }
 
-fn run_writer(
-    app: &AppHandle,
+/// Run the writer, then always release the session: `release` clears
+/// `active_session` and wakes quit waiters on success, error or panic (C-09).
+/// On error, whatever reached disk is salvaged as a finished session.
+fn write_session(
+    app_data: &Path,
     rx: Receiver<WavMsg>,
     session_id: &str,
     started_at: SystemTime,
-) -> Result<()> {
-    let state = app.state::<AppState>();
-    let app_data = state.app_data_dir.clone();
-    let dir = session_dir(&app_data, session_id)?;
+    release: ReleaseSession,
+) -> Result<SessionMeta> {
+    let _release = release;
+    run_writer(app_data, rx, session_id, started_at, FLUSH_EVERY).inspect_err(|_| {
+        if let Err(e) = sessions::recover_session(app_data, session_id) {
+            log::warn!("could not salvage session {session_id}: {e}");
+        }
+    })
+}
+
+/// Write `rx` to the session's `audio.wav` until `Stop` (or the recorder
+/// hangs up). A provisional meta.json goes first and the WAV header is
+/// flushed every `flush_every`, so a quit or crash leaves a recoverable
+/// session (C-02); the final meta replaces it at the end.
+fn run_writer(
+    app_data: &Path,
+    rx: Receiver<WavMsg>,
+    session_id: &str,
+    started_at: SystemTime,
+    flush_every: Duration,
+) -> Result<SessionMeta> {
+    let dir = session_dir(app_data, session_id)?;
     std::fs::create_dir_all(&dir)?;
-    let wav_path = audio_path(&app_data, session_id)?;
+    let wav_path = audio_path(app_data, session_id)?;
 
     let spec = hound::WavSpec {
         channels: 1,
@@ -63,39 +111,132 @@ fn run_writer(
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(&wav_path, spec)?;
+    let mut meta = SessionMeta {
+        id: session_id.to_string(),
+        created_at: iso8601_utc(started_at),
+        duration_secs: 0.0,
+        model_used: None,
+        speaker_count: None,
+        has_transcript: false,
+        in_progress: true,
+    };
+    sessions::write_meta(app_data, &meta)?;
     let mut total_samples: u64 = 0;
+    let mut last_flush = Instant::now();
 
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            WavMsg::Chunk(chunk) => {
+    loop {
+        match rx.recv_timeout(flush_every) {
+            Ok(WavMsg::Chunk(chunk)) => {
                 for s in &chunk {
                     let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                     writer.write_sample(v)?;
                 }
                 total_samples += chunk.len() as u64;
             }
-            WavMsg::Stop => break,
+            Ok(WavMsg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if last_flush.elapsed() >= flush_every {
+            writer.flush()?;
+            last_flush = Instant::now();
         }
     }
     writer.finalize()?;
 
-    let duration_secs = total_samples as f32 / SAMPLE_RATE as f32;
-    let created_at = iso8601_utc(started_at);
-    let meta = SessionMeta {
-        id: session_id.to_string(),
-        created_at,
-        duration_secs,
-        model_used: None,
-        speaker_count: None,
-        has_transcript: false,
+    meta.duration_secs = total_samples as f32 / SAMPLE_RATE as f32;
+    meta.in_progress = false;
+    sessions::write_meta(app_data, &meta)?;
+    Ok(meta)
+}
+
+/// Dropped when a writer ends, however it ends: clears `active_session` if it
+/// still names this session, and wakes anyone waiting for the writer.
+struct ReleaseSession {
+    id: String,
+    active: Arc<Mutex<Option<ActiveSession>>>,
+    ended: Arc<Condvar>,
+}
+
+impl Drop for ReleaseSession {
+    fn drop(&mut self) {
+        let mut active = self.active.lock();
+        if active.as_ref().is_some_and(|a| a.id == self.id) {
+            *active = None;
+        }
+        self.ended.notify_all();
+    }
+}
+
+/// Block until no session recording is active, or `timeout` passes. Returns
+/// whether the recording ended in time.
+pub fn wait_for_session_end(
+    active: &Mutex<Option<ActiveSession>>,
+    ended: &Condvar,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut guard = active.lock();
+    while guard.is_some() {
+        if ended.wait_until(&mut guard, deadline).timed_out() {
+            return guard.is_none();
+        }
+    }
+    true
+}
+
+const EXIT_RUNNING: u8 = 0;
+const EXIT_FINISHING: u8 = 1;
+const EXIT_READY: u8 = 2;
+static EXIT_PHASE: AtomicU8 = AtomicU8::new(EXIT_RUNNING);
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExitAction {
+    Allow,
+    /// A recording is being finished; its thread re-requests the exit.
+    Hold,
+    FinishRecordingFirst,
+}
+
+fn exit_action(phase: u8, recording: bool) -> ExitAction {
+    match phase {
+        EXIT_READY => ExitAction::Allow,
+        EXIT_FINISHING => ExitAction::Hold,
+        _ if recording => ExitAction::FinishRecordingFirst,
+        _ => ExitAction::Allow,
+    }
+}
+
+/// For `RunEvent::ExitRequested` with an exit code (tray Quit, `app.exit`).
+/// Returns true when the exit must be prevented for now: an active session
+/// recording is stopped on another thread, which waits up to `EXIT_WAIT` for
+/// the writer to finalize and then requests the exit again (5.1).
+pub fn hold_exit_for_session(app: &AppHandle, code: i32) -> bool {
+    let Some(state) = app.try_state::<AppState>() else {
+        return false;
     };
-    sessions::write_meta(&app_data, &meta)?;
-
-    // Clear active-session pointer.
-    *state.active_session.lock() = None;
-
-    let _ = app.emit("session://updated", &meta);
-    Ok(())
+    let recording = state.active_session.lock().is_some();
+    match exit_action(EXIT_PHASE.load(Ordering::SeqCst), recording) {
+        ExitAction::Allow => false,
+        ExitAction::Hold => true,
+        ExitAction::FinishRecordingFirst => {
+            EXIT_PHASE.store(EXIT_FINISHING, Ordering::SeqCst);
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<AppState>();
+                if let Err(e) = state.recorder.stop_raw_capture() {
+                    log::error!("stop session recording on exit: {e}");
+                }
+                let ended =
+                    wait_for_session_end(&state.active_session, &state.session_ended, EXIT_WAIT);
+                if !ended {
+                    log::warn!("session writer still busy after {EXIT_WAIT:?}; exiting anyway");
+                }
+                EXIT_PHASE.store(EXIT_READY, Ordering::SeqCst);
+                app.exit(code);
+            });
+            true
+        }
+    }
 }
 
 /// Spawn a transcription job for an existing saved session.
@@ -437,5 +578,164 @@ mod transcriber_tests {
     fn both_missing_models_are_named() {
         let msg = missing_models(ModelId::BaseEn, true, |_| false).unwrap();
         assert!(msg.contains("\"base.en\"") && msg.contains("\"sortformer-4spk-v2\""), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    use crate::sessions::tests::TempAppData;
+    use std::sync::mpsc::channel;
+
+    const ID: &str = "2026-04-24T15-12-09Z";
+
+    type Active = Arc<Mutex<Option<ActiveSession>>>;
+
+    fn active(id: &str) -> Active {
+        Arc::new(Mutex::new(Some(ActiveSession {
+            id: id.into(),
+            started_at: SystemTime::now(),
+        })))
+    }
+
+    fn release(id: &str, active: &Active, ended: &Arc<Condvar>) -> ReleaseSession {
+        ReleaseSession {
+            id: id.into(),
+            active: active.clone(),
+            ended: ended.clone(),
+        }
+    }
+
+    /// Poll until `done` holds; the writer runs on another thread.
+    fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wav_len(path: &Path) -> Option<u32> {
+        hound::WavReader::open(path).ok().map(|r| r.len())
+    }
+
+    #[test]
+    fn writer_keeps_wav_and_provisional_meta_valid_while_recording() {
+        assert!(FLUSH_EVERY <= Duration::from_secs(2));
+        let tmp = TempAppData::new("writer-flush");
+        let app_data = tmp.0.clone();
+        let (tx, rx) = channel();
+        let writer = std::thread::spawn(move || {
+            let flush_every = Duration::from_millis(20);
+            run_writer(&app_data, rx, ID, SystemTime::now(), flush_every)
+        });
+        let app_data = &tmp.0;
+        let audio = audio_path(app_data, ID).unwrap();
+
+        // What a crash mid-recording would leave: the header already counts
+        // the audio, and the meta says "in progress".
+        tx.send(WavMsg::Chunk(vec![0.25; 16_000])).unwrap();
+        eventually("a flushed header", || wav_len(&audio) == Some(16_000));
+        assert!(sessions::read_meta(app_data, ID).unwrap().in_progress);
+        assert!(sessions::list(app_data).unwrap().is_empty());
+
+        tx.send(WavMsg::Chunk(vec![0.25; 8_000])).unwrap();
+        tx.send(WavMsg::Stop).unwrap();
+        let meta = writer.join().unwrap().unwrap();
+        assert!(!meta.in_progress);
+        assert_eq!(meta.duration_secs, 1.5);
+        assert_eq!(wav_len(&audio), Some(24_000));
+        let listed = sessions::list(app_data).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].in_progress);
+    }
+
+    #[test]
+    fn writer_error_still_clears_active_session() {
+        let tmp = TempAppData::new("writer-error");
+        // A file where the session folder should go: create_dir_all fails.
+        std::fs::write(sessions::sessions_dir(&tmp.0).join(ID), b"").unwrap();
+        let active = active(ID);
+        let ended = Arc::new(Condvar::new());
+        let (_tx, rx) = channel();
+
+        let guard = release(ID, &active, &ended);
+        let res = write_session(&tmp.0, rx, ID, SystemTime::now(), guard);
+
+        assert!(res.is_err());
+        assert!(active.lock().is_none(), "not cleared after an error");
+    }
+
+    #[test]
+    fn finished_writer_clears_active_session_and_wakes_waiters() {
+        let tmp = TempAppData::new("writer-done");
+        let active = active(ID);
+        let ended = Arc::new(Condvar::new());
+        let waiter = {
+            let (active, ended) = (active.clone(), ended.clone());
+            std::thread::spawn(move || {
+                wait_for_session_end(&active, &ended, Duration::from_secs(5))
+            })
+        };
+        let (tx, rx) = channel();
+        let writer = {
+            let (app_data, guard) = (tmp.0.clone(), release(ID, &active, &ended));
+            std::thread::spawn(move || write_session(&app_data, rx, ID, SystemTime::now(), guard))
+        };
+
+        tx.send(WavMsg::Chunk(vec![0.1; 1_600])).unwrap();
+        tx.send(WavMsg::Stop).unwrap();
+
+        assert_eq!(writer.join().unwrap().unwrap().duration_secs, 0.1);
+        assert!(waiter.join().unwrap(), "waiter was not woken");
+        assert!(active.lock().is_none());
+    }
+
+    #[test]
+    fn release_clears_on_panic_and_spares_a_newer_session() {
+        let active = active(ID);
+        let ended = Arc::new(Condvar::new());
+        let guard = release(ID, &active, &ended);
+        let crashed = std::thread::spawn(move || {
+            let _guard = guard;
+            panic!("writer panicked");
+        });
+        assert!(crashed.join().is_err());
+        assert!(active.lock().is_none());
+
+        // A late release from an old writer must not end the current session.
+        let current = "2026-04-24T15-12-10Z";
+        *active.lock() = Some(ActiveSession {
+            id: current.into(),
+            started_at: SystemTime::now(),
+        });
+        drop(release(ID, &active, &ended));
+        assert_eq!(active.lock().as_ref().unwrap().id, current);
+    }
+
+    #[test]
+    fn wait_for_session_end_times_out_while_recording() {
+        let ended = Condvar::new();
+        let idle = Mutex::new(None);
+        assert!(wait_for_session_end(&idle, &ended, Duration::ZERO));
+
+        let recording = active(ID);
+        let start = Instant::now();
+        let timeout = Duration::from_millis(50);
+        assert!(!wait_for_session_end(&recording, &ended, timeout));
+        assert!(start.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn exit_finishes_an_active_recording_once() {
+        use ExitAction::*;
+        assert_eq!(exit_action(EXIT_RUNNING, false), Allow);
+        assert_eq!(exit_action(EXIT_RUNNING, true), FinishRecordingFirst);
+        // Quit again while the recording is being finished: keep waiting.
+        assert_eq!(exit_action(EXIT_FINISHING, true), Hold);
+        assert_eq!(exit_action(EXIT_FINISHING, false), Hold);
+        // The finishing thread's own exit request goes through.
+        assert_eq!(exit_action(EXIT_READY, true), Allow);
+        assert_eq!(exit_action(EXIT_READY, false), Allow);
     }
 }

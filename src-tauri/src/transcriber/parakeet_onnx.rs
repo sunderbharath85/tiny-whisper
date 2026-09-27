@@ -81,10 +81,10 @@ impl ParakeetOnnxBackend {
 
 fn exec_config(device: Device) -> Option<ExecutionConfig> {
     match device {
-        #[cfg(feature = "gpu")]
-        Device::Gpu => {
-            Some(ExecutionConfig::new().with_execution_provider(ExecutionProvider::DirectML))
-        }
+        #[cfg(all(feature = "gpu", target_os = "macos"))]
+        Device::Gpu => Some(ExecutionConfig::new().with_execution_provider(ExecutionProvider::CoreML)),
+        #[cfg(all(feature = "gpu", not(target_os = "macos")))]
+        Device::Gpu => Some(ExecutionConfig::new().with_execution_provider(ExecutionProvider::DirectML)),
         #[cfg(not(feature = "gpu"))]
         Device::Gpu => Some(ExecutionConfig::new().with_execution_provider(ExecutionProvider::Cpu)),
         Device::Cpu => None,

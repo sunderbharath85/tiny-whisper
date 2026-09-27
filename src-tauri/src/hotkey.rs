@@ -190,34 +190,152 @@ pub fn restore(app: &AppHandle, prev: &Settings) {
     }
 }
 
+/// The model id as settings.json and the UI spell it, e.g. `small.en`.
+pub fn model_name(model: crate::config::ModelId) -> String {
+    serde_json::to_value(model)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{model:?}"))
+}
+
+/// The error for a model that is needed but not downloaded.
+pub fn model_not_downloaded(model: crate::config::ModelId) -> String {
+    format!(
+        "Model \"{}\" is not downloaded. Open Settings → Models to download it.",
+        model_name(model)
+    )
+}
+
+/// What a press of the dictation hotkey does.
+#[derive(Debug, PartialEq, Eq)]
+enum DictationAction {
+    /// A session recording owns the microphone.
+    Ignore,
+    Stop,
+    Start,
+    /// Starting would only turn every phrase into an error, so show this instead.
+    Refuse(String),
+}
+
+fn dictation_action(
+    session_active: bool,
+    recording: bool,
+    model: crate::config::ModelId,
+    model_downloaded: bool,
+) -> DictationAction {
+    if session_active {
+        DictationAction::Ignore
+    } else if recording {
+        DictationAction::Stop
+    } else if !model_downloaded {
+        DictationAction::Refuse(model_not_downloaded(model))
+    } else {
+        DictationAction::Start
+    }
+}
+
 fn handle_dictation(app: &AppHandle, _app_handle: &AppHandle, event: ShortcutEvent) {
     if event.state() != ShortcutState::Pressed {
         return;
     }
     let state = app.state::<AppState>();
+    let model = state.settings.lock().model;
     // Don't let the dictation hotkey fire while a session is being recorded —
     // the recorder would refuse the cpal stream and log a warning.
-    if state.active_session.lock().is_some() {
-        return;
-    }
-    let was_recording = state.is_recording.load(Ordering::SeqCst);
+    let action = dictation_action(
+        state.active_session.lock().is_some(),
+        state.is_recording.load(Ordering::SeqCst),
+        model,
+        state.transcriber.is_downloaded(model),
+    );
 
-    if was_recording {
-        if let Err(e) = state.recorder.stop_session() {
-            emit_status(app, AppStatus::Error { message: e.to_string() });
-            return;
+    match action {
+        DictationAction::Ignore => {}
+        DictationAction::Stop => {
+            if let Err(e) = state.recorder.stop_session() {
+                emit_status(app, AppStatus::Error { message: e.to_string() });
+                return;
+            }
+            state.is_recording.store(false, Ordering::SeqCst);
+            emit_status(app, AppStatus::Idle);
+            hide_indicator(app);
         }
-        state.is_recording.store(false, Ordering::SeqCst);
-        emit_status(app, AppStatus::Idle);
-        hide_indicator(app);
-    } else {
-        if let Err(e) = state.recorder.start_session() {
-            emit_status(app, AppStatus::Error { message: e.to_string() });
-            return;
+        // The recorder is never started, so is_recording stays false.
+        DictationAction::Refuse(message) => show_error(app, message),
+        DictationAction::Start => {
+            if let Err(e) = state.recorder.start_session() {
+                emit_status(app, AppStatus::Error { message: e.to_string() });
+                return;
+            }
+            state.is_recording.store(true, Ordering::SeqCst);
+            show_indicator(app);
+            emit_status(app, AppStatus::Listening);
         }
-        state.is_recording.store(true, Ordering::SeqCst);
-        show_indicator(app);
-        emit_status(app, AppStatus::Listening);
+    }
+}
+
+/// How long `show_error` keeps the indicator up when nothing else needs it.
+const ERROR_SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Emit an error and show the indicator so it is seen even when dictation is
+/// off. The indicator is hidden again after `ERROR_SHOWN_FOR`, unless
+/// dictation or a session recording has started since, or a newer error
+/// restarted the wait.
+pub fn show_error(app: &AppHandle, message: String) {
+    static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let this = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    emit_status(app, AppStatus::Error { message });
+    show_indicator(app);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(ERROR_SHOWN_FOR);
+        let state = app.state::<AppState>();
+        let busy = state.is_recording.load(Ordering::SeqCst) || state.active_session.lock().is_some();
+        if !busy && LATEST.load(Ordering::SeqCst) == this {
+            hide_indicator(&app);
+        }
+    });
+}
+
+#[cfg(test)]
+mod dictation_tests {
+    use super::*;
+    use crate::config::ModelId;
+
+    #[test]
+    fn model_names_match_settings_spelling() {
+        assert_eq!(model_name(ModelId::SmallEn), "small.en");
+        assert_eq!(model_name(ModelId::Sortformer4SpkV2), "sortformer-4spk-v2");
+        assert_eq!(
+            model_not_downloaded(ModelId::SmallEn),
+            "Model \"small.en\" is not downloaded. Open Settings → Models to download it."
+        );
+    }
+
+    #[test]
+    fn dictation_refuses_to_start_without_the_model() {
+        assert_eq!(
+            dictation_action(false, false, ModelId::SmallEn, false),
+            DictationAction::Refuse(model_not_downloaded(ModelId::SmallEn))
+        );
+        assert_eq!(dictation_action(false, false, ModelId::SmallEn, true), DictationAction::Start);
+    }
+
+    #[test]
+    fn dictation_can_always_stop() {
+        // Even if the model was deleted while listening.
+        assert_eq!(dictation_action(false, true, ModelId::BaseEn, false), DictationAction::Stop);
+        assert_eq!(dictation_action(false, true, ModelId::BaseEn, true), DictationAction::Stop);
+    }
+
+    #[test]
+    fn dictation_is_ignored_during_a_session_recording() {
+        for (recording, downloaded) in [(false, false), (false, true), (true, true)] {
+            assert_eq!(
+                dictation_action(true, recording, ModelId::TinyEn, downloaded),
+                DictationAction::Ignore
+            );
+        }
     }
 }
 

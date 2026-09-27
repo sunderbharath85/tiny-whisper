@@ -210,34 +210,34 @@ fn segment_worker(app: AppHandle, rx: Receiver<Segment>) {
             continue; // <100ms, ignore
         }
         let state = app.state::<AppState>();
-        emit_status(&app, AppStatus::Transcribing);
         let settings = state.settings.lock().clone();
+        // The model can be deleted while dictation is on; say so plainly
+        // instead of passing on the backend's load error.
+        if !state.transcriber.is_downloaded(settings.model) {
+            hotkey::show_error(&app, hotkey::model_not_downloaded(settings.model));
+            continue;
+        }
+        emit_status(&app, AppStatus::Transcribing);
         let result = state.transcriber.transcribe(
             &samples,
             settings.model,
             settings.device,
             &settings.language,
         );
-        match result {
+        let failure = match result {
             Ok(text) if !text.trim().is_empty() && text.trim() != "[BLANK_AUDIO]" => {
-                if let Err(e) = paster::paste(&(text.trim().to_string() + " ")) {
-                    emit_status(
-                        &app,
-                        AppStatus::Error {
-                            message: e.to_string(),
-                        },
-                    );
-                }
+                paster::paste(&(text.trim().to_string() + " "))
+                    .err()
+                    .map(|e| e.to_string())
             }
-            Err(e) => {
-                emit_status(
-                    &app,
-                    AppStatus::Error {
-                        message: e.to_string(),
-                    },
-                );
-            }
-            _ => {}
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        // Leave an error as the latest status (C-05). Going back to Listening
+        // or Idle here replaced it before anyone could read it.
+        if let Some(message) = failure {
+            hotkey::show_error(&app, message);
+            continue;
         }
         // After transcription, if session still active, go back to Listening.
         if state

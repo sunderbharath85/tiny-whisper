@@ -186,7 +186,7 @@ fn ensure_in_sessions_dir(app_data: &Path, dir: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -220,10 +220,10 @@ mod tests {
 
     /// A fresh `app_data` dir (with an empty `sessions/`) under the system
     /// temp dir, removed on drop.
-    struct TempAppData(PathBuf);
+    pub(crate) struct TempAppData(pub(crate) PathBuf);
 
     impl TempAppData {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             static N: AtomicUsize = AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "tiny-whisper-test-{name}-{}-{}",

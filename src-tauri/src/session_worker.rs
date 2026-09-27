@@ -14,15 +14,18 @@ use crate::recorder::WavMsg;
 use crate::sessions::{
     self, audio_path, session_dir, SessionMeta, Transcript, TranscriptSegment,
 };
-use crate::state::AppState;
+use crate::state::{ActiveSession, AppState};
 use crate::transcriber::SpeakerTurn;
 use anyhow::{anyhow, Result};
+use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tauri::{AppHandle, Emitter, Manager};
 
 const SAMPLE_RATE: u32 = 16_000;
+
 
 /// Spawn a writer thread for an in-progress recording.
 pub fn spawn_writer(
@@ -31,30 +34,54 @@ pub fn spawn_writer(
     session_id: String,
     started_at: SystemTime,
 ) {
+    let state = app.state::<AppState>();
+    let app_data = state.app_data_dir.clone();
+    let release = ReleaseSession {
+        id: session_id.clone(),
+        active: state.active_session.clone(),
+    };
     std::thread::spawn(move || {
-        if let Err(e) = run_writer(&app, rx, &session_id, started_at) {
-            log::error!("session writer ({session_id}) failed: {e}");
-            emit_status(
-                &app,
-                AppStatus::Error {
-                    message: format!("session write failed: {e}"),
-                },
-            );
+        match write_session(&app_data, rx, &session_id, started_at, release) {
+            Ok(meta) => {
+                let _ = app.emit("session://updated", &meta);
+            }
+            Err(e) => {
+                log::error!("session writer ({session_id}) failed: {e}");
+                emit_status(
+                    &app,
+                    AppStatus::Error {
+                        message: format!("session write failed: {e}"),
+                    },
+                );
+            }
         }
     });
 }
 
-fn run_writer(
-    app: &AppHandle,
+/// Run the writer, then always release the session: `release` clears
+/// `active_session` on success, error or panic (C-09).
+fn write_session(
+    app_data: &Path,
     rx: Receiver<WavMsg>,
     session_id: &str,
     started_at: SystemTime,
-) -> Result<()> {
-    let state = app.state::<AppState>();
-    let app_data = state.app_data_dir.clone();
-    let dir = session_dir(&app_data, session_id)?;
+    release: ReleaseSession,
+) -> Result<SessionMeta> {
+    let _release = release;
+    run_writer(app_data, rx, session_id, started_at)
+}
+
+/// Write `rx` to the session's `audio.wav` until `Stop` (or the recorder
+/// hangs up), then write its meta.json.
+fn run_writer(
+    app_data: &Path,
+    rx: Receiver<WavMsg>,
+    session_id: &str,
+    started_at: SystemTime,
+) -> Result<SessionMeta> {
+    let dir = session_dir(app_data, session_id)?;
     std::fs::create_dir_all(&dir)?;
-    let wav_path = audio_path(&app_data, session_id)?;
+    let wav_path = audio_path(app_data, session_id)?;
 
     let spec = hound::WavSpec {
         channels: 1,
@@ -79,23 +106,32 @@ fn run_writer(
     }
     writer.finalize()?;
 
-    let duration_secs = total_samples as f32 / SAMPLE_RATE as f32;
-    let created_at = iso8601_utc(started_at);
     let meta = SessionMeta {
         id: session_id.to_string(),
-        created_at,
-        duration_secs,
+        created_at: iso8601_utc(started_at),
+        duration_secs: total_samples as f32 / SAMPLE_RATE as f32,
         model_used: None,
         speaker_count: None,
         has_transcript: false,
     };
-    sessions::write_meta(&app_data, &meta)?;
+    sessions::write_meta(app_data, &meta)?;
+    Ok(meta)
+}
 
-    // Clear active-session pointer.
-    *state.active_session.lock() = None;
+/// Dropped when a writer ends, however it ends: clears `active_session` if it
+/// still names this session.
+struct ReleaseSession {
+    id: String,
+    active: Arc<Mutex<Option<ActiveSession>>>,
+}
 
-    let _ = app.emit("session://updated", &meta);
-    Ok(())
+impl Drop for ReleaseSession {
+    fn drop(&mut self) {
+        let mut active = self.active.lock();
+        if active.as_ref().is_some_and(|a| a.id == self.id) {
+            *active = None;
+        }
+    }
 }
 
 /// Spawn a transcription job for an existing saved session.
@@ -279,4 +315,80 @@ fn unix_to_ymdhms(t: i64) -> (i32, u32, u32, u32, u32, u32) {
     let mo = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mo <= 2 { y + 1 } else { y };
     (y, mo, d, h, mi, s)
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+    use crate::sessions::tests::TempAppData;
+    use std::sync::mpsc::channel;
+
+    const ID: &str = "2026-04-24T15-12-09Z";
+
+    type Active = Arc<Mutex<Option<ActiveSession>>>;
+
+    fn active(id: &str) -> Active {
+        Arc::new(Mutex::new(Some(ActiveSession {
+            id: id.into(),
+            started_at: SystemTime::now(),
+        })))
+    }
+
+    fn release(id: &str, active: &Active) -> ReleaseSession {
+        ReleaseSession {
+            id: id.into(),
+            active: active.clone(),
+        }
+    }
+
+    #[test]
+    fn writer_error_still_clears_active_session() {
+        let tmp = TempAppData::new("writer-error");
+        // A file where the session folder should go: create_dir_all fails.
+        std::fs::write(sessions::sessions_dir(&tmp.0).join(ID), b"").unwrap();
+        let active = active(ID);
+        let (_tx, rx) = channel();
+
+        let guard = release(ID, &active);
+        let res = write_session(&tmp.0, rx, ID, SystemTime::now(), guard);
+
+        assert!(res.is_err());
+        assert!(active.lock().is_none(), "not cleared after an error");
+    }
+
+    #[test]
+    fn finished_writer_clears_active_session() {
+        let tmp = TempAppData::new("writer-done");
+        let active = active(ID);
+        let (tx, rx) = channel();
+        tx.send(WavMsg::Chunk(vec![0.1; 1_600])).unwrap();
+        tx.send(WavMsg::Stop).unwrap();
+
+        let guard = release(ID, &active);
+        let meta = write_session(&tmp.0, rx, ID, SystemTime::now(), guard).unwrap();
+
+        assert_eq!(meta.duration_secs, 0.1);
+        assert!(active.lock().is_none());
+    }
+
+    #[test]
+    fn release_clears_on_panic_and_spares_a_newer_session() {
+        let active = active(ID);
+        let guard = release(ID, &active);
+        let crashed = std::thread::spawn(move || {
+            let _guard = guard;
+            panic!("writer panicked");
+        });
+        assert!(crashed.join().is_err());
+        assert!(active.lock().is_none());
+
+        // A late release from an old writer must not end the current session.
+        let current = "2026-04-24T15-12-10Z";
+        *active.lock() = Some(ActiveSession {
+            id: current.into(),
+            started_at: SystemTime::now(),
+        });
+        drop(release(ID, &active));
+        assert_eq!(active.lock().as_ref().unwrap().id, current);
+    }
 }

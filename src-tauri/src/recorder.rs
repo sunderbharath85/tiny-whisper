@@ -108,6 +108,10 @@ struct Session {
     mode: SessionMode,
 }
 
+/// The session writer hung up, so Raw mode has nowhere to send audio.
+#[derive(Debug)]
+struct WriterGone;
+
 const PRE_ROLL_FRAMES: usize = 5; // 150ms pre-roll prepended to phrase start
 const RESAMPLER_CHUNK_MS: usize = 10; // fixed resampler input chunk
 
@@ -166,23 +170,37 @@ fn run(cmd_rx: Receiver<Cmd>, seg_tx: Sender<Segment>, evt_tx: Sender<RecorderEv
             Err(TryRecvError::Empty) => {}
         }
 
-        if let Some(s) = &mut session {
-            drain_tick(s, &seg_tx, &evt_tx);
-        }
+        tick(&mut session, &seg_tx, &evt_tx);
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
+/// One periodic drain. If the Raw-mode writer has hung up, the capture ends
+/// here instead of recording into the void (5.5).
+fn tick(session: &mut Option<Session>, seg_tx: &Sender<Segment>, evt_tx: &Sender<RecorderEvent>) {
+    let Some(s) = session else { return };
+    if drain_tick(s, seg_tx, evt_tx).is_err() {
+        log::error!("session writer hung up; ending raw capture");
+        *session = None; // drops the stream
+        let _ = evt_tx.send(RecorderEvent::RawCaptureStopped);
+        let _ = evt_tx.send(RecorderEvent::Error);
+    }
+}
+
 /// Stop a session on request: flush everything still buffered, tell the
-/// writer (Raw mode) and report `stopped`.
+/// writer (Raw mode) and report `stopped`, plus `Error` if the writer was gone.
 fn end_session(
     mut s: Session,
     stopped: RecorderEvent,
     seg_tx: &Sender<Segment>,
     evt_tx: &Sender<RecorderEvent>,
 ) {
-    finish(&mut s, seg_tx, evt_tx);
+    let res = finish(&mut s, seg_tx, evt_tx);
     let _ = evt_tx.send(stopped);
+    if res.is_err() {
+        log::error!("session writer hung up before stop");
+        let _ = evt_tx.send(RecorderEvent::Error);
+    }
 }
 
 fn start_session(mode: SessionMode) -> Result<Session> {
@@ -265,10 +283,14 @@ fn take_captured(buf: &Mutex<Vec<f32>>, out: &mut Vec<f32>) {
     std::mem::swap(&mut *buf.lock(), out);
 }
 
-fn drain_tick(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<RecorderEvent>) {
+fn drain_tick(
+    s: &mut Session,
+    seg_tx: &Sender<Segment>,
+    evt_tx: &Sender<RecorderEvent>,
+) -> Result<(), WriterGone> {
     take_captured(&s.buf, &mut s.raw);
     if s.raw.is_empty() {
-        return;
+        return Ok(());
     }
 
     let mono = to_mono(&s.raw, s.channels);
@@ -278,7 +300,7 @@ fn drain_tick(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<Recorde
             Ok(v) => v,
             Err(e) => {
                 log::error!("resample failed: {e}");
-                return;
+                return Ok(());
             }
         },
     };
@@ -288,9 +310,13 @@ fn drain_tick(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<Recorde
 /// Stop the device, then push everything still buffered through the session:
 /// the last callback's samples, the resampler tail (C-01) and, if a phrase is
 /// open, the last partial frame with the phrase itself.
-fn finish(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<RecorderEvent>) {
+fn finish(
+    s: &mut Session,
+    seg_tx: &Sender<Segment>,
+    evt_tx: &Sender<RecorderEvent>,
+) -> Result<(), WriterGone> {
     s.stream = None;
-    drain_tick(s, seg_tx, evt_tx);
+    drain_tick(s, seg_tx, evt_tx)?;
     let tail = match &mut s.resampler {
         Some(r) => r.flush().unwrap_or_else(|e| {
             log::error!("resampler flush failed: {e}");
@@ -298,7 +324,7 @@ fn finish(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<RecorderEve
         }),
         None => Vec::new(),
     };
-    deliver(s, tail, seg_tx, evt_tx);
+    deliver(s, tail, seg_tx, evt_tx)?;
 
     match &mut s.mode {
         SessionMode::Vad { phrase, .. } => {
@@ -308,10 +334,11 @@ fn finish(s: &mut Session, seg_tx: &Sender<Segment>, evt_tx: &Sender<RecorderEve
             }
         }
         SessionMode::Raw { tx } => {
-            let _ = tx.send(WavMsg::Stop);
+            tx.send(WavMsg::Stop).map_err(|_| WriterGone)?;
         }
     }
     s.pending_16k.clear();
+    Ok(())
 }
 
 /// Route a batch of 16kHz mono audio to the session's consumer.
@@ -320,14 +347,14 @@ fn deliver(
     mono_16k: Vec<f32>,
     seg_tx: &Sender<Segment>,
     evt_tx: &Sender<RecorderEvent>,
-) {
+) -> Result<(), WriterGone> {
     if mono_16k.is_empty() {
-        return;
+        return Ok(());
     }
     match &mut s.mode {
         SessionMode::Raw { tx } => {
             // Forward as-is. No frame alignment requirement.
-            let _ = tx.send(WavMsg::Chunk(mono_16k));
+            tx.send(WavMsg::Chunk(mono_16k)).map_err(|_| WriterGone)?;
         }
         SessionMode::Vad { vad, phrase, pre_roll } => {
             s.pending_16k.extend_from_slice(&mono_16k);
@@ -363,6 +390,7 @@ fn deliver(
             }
         }
     }
+    Ok(())
 }
 
 fn to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
@@ -553,9 +581,9 @@ mod tests {
         let (evt_tx, _evt_rx) = channel();
         for data in input.chunks(sample_rate as usize / 50) {
             callback(&s, data);
-            drain_tick(&mut s, &seg_tx, &evt_tx);
+            drain_tick(&mut s, &seg_tx, &evt_tx).unwrap();
         }
-        finish(&mut s, &seg_tx, &evt_tx);
+        finish(&mut s, &seg_tx, &evt_tx).unwrap();
         let (out, stopped) = written(&rx);
         assert!(stopped, "writer did not get Stop");
         out
@@ -654,12 +682,12 @@ mod tests {
         for _ in 0..ticks {
             callback(&s, &data);
             callback(&s, &data);
-            drain_tick(&mut s, &seg_tx, &evt_tx);
+            drain_tick(&mut s, &seg_tx, &evt_tx).unwrap();
             let buf = s.buf.lock();
             assert_eq!(buf.len(), 0, "capture buffer not drained");
             assert_eq!(buf.capacity(), cap, "callback buffer reallocated");
         }
-        finish(&mut s, &seg_tx, &evt_tx);
+        finish(&mut s, &seg_tx, &evt_tx).unwrap();
         let (out, _) = written(&rx);
         assert_eq!(out.len(), ticks * 320); // 20ms at 16kHz per tick
     }
@@ -683,7 +711,7 @@ mod tests {
             })
             .collect();
         callback(&s, &frames.concat());
-        drain_tick(&mut s, &seg_tx, &evt_tx);
+        drain_tick(&mut s, &seg_tx, &evt_tx).unwrap();
 
         let events: Vec<RecorderEvent> = evt_rx.try_iter().collect();
         assert!(events
@@ -711,12 +739,59 @@ mod tests {
         let input = sine(440.0, 48_000, 24_000);
         for data in input.chunks(960) {
             callback(&s, data);
-            drain_tick(&mut s, &seg_tx, &evt_tx);
+            drain_tick(&mut s, &seg_tx, &evt_tx).unwrap();
         }
         end_session(s, RecorderEvent::SessionStopped, &seg_tx, &evt_tx);
 
         let segs: Vec<Segment> = seg_rx.try_iter().collect();
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].len(), 8_000, "all 0.5s of audio reaches the phrase");
+    }
+
+    #[test]
+    fn raw_capture_ends_when_writer_hangs_up() {
+        let (s, rx) = raw_session(TARGET_SR, 1);
+        let (seg_tx, _seg_rx) = channel();
+        let (evt_tx, evt_rx) = channel();
+        let mut session = Some(s);
+
+        callback(session.as_ref().unwrap(), &[0.1; 320]);
+        tick(&mut session, &seg_tx, &evt_tx);
+        assert!(session.is_some(), "live writer: capture continues");
+        assert_eq!(written(&rx).0.len(), 320);
+
+        drop(rx);
+        callback(session.as_ref().unwrap(), &[0.1; 320]);
+        tick(&mut session, &seg_tx, &evt_tx);
+        assert!(
+            session.is_none(),
+            "capture must end once the writer is gone"
+        );
+        let events: Vec<RecorderEvent> = evt_rx.try_iter().collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [RecorderEvent::RawCaptureStopped, RecorderEvent::Error]
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn stop_with_writer_gone_reports_error() {
+        let (s, rx) = raw_session(48_000, 1);
+        let (seg_tx, _seg_rx) = channel();
+        let (evt_tx, evt_rx) = channel();
+        drop(rx);
+
+        end_session(s, RecorderEvent::RawCaptureStopped, &seg_tx, &evt_tx);
+        let events: Vec<RecorderEvent> = evt_rx.try_iter().collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [RecorderEvent::RawCaptureStopped, RecorderEvent::Error]
+            ),
+            "{events:?}"
+        );
     }
 }

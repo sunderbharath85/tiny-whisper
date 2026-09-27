@@ -74,6 +74,8 @@ export const api = {
   deleteModel: (id: ModelId) => invoke<void>("delete_model", { id }),
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  /// Error from app setup (e.g. hotkey registration), returned once then cleared.
+  takeStartupError: () => invoke<string | null>("take_startup_error"),
 
   startSessionRecording: () => invoke<string>("start_session_recording"),
   stopSessionRecording: () => invoke<void>("stop_session_recording"),

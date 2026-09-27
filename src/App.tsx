@@ -5,6 +5,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SessionsCard } from "@/components/SessionsCard";
+import { HotkeyCapture } from "@/components/HotkeyCapture";
+import { ErrorArea, useErrorList } from "@/components/ErrorArea";
+import { Label } from "@/components/ui/label";
+import { errorMessage, setUnexpectedSink, type RunAction } from "@/lib/errors";
 import {
   Check,
   Download,
@@ -65,8 +69,23 @@ export default function App() {
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("dictation");
+  const { errors, report, dismiss, clear: clearErrors } = useErrorList();
 
   useEffect(() => {
+    // K1: an error from app setup (e.g. the saved hotkey could not be
+    // registered) is handed over once, on boot.
+    async function showStartupError() {
+      try {
+        const err = await api.takeStartupError();
+        if (err) report(err);
+      } catch (e) {
+        const msg = errorMessage(e);
+        // Builds without the command reject with "... not found"; nothing to show.
+        if (/not found/i.test(msg)) console.warn("take_startup_error unavailable:", msg);
+        else report(`Could not read startup errors: ${msg}`);
+      }
+    }
+
     (async () => {
       // In Tauri 2, the webview can load before setup() calls app.manage(),
       // so the first get_settings invocation races with state registration
@@ -79,6 +98,7 @@ export default function App() {
           try {
             setLaunchAtLogin(await api.getAutostart());
           } catch { /* plugin may not be registered yet; best-effort */ }
+          await showStartupError();
           break;
         } catch (e) {
           const msg = String(e);
@@ -91,13 +111,27 @@ export default function App() {
         }
       }
     })();
-    const offStatus = api.onStatus(setStatus);
-    const offProgress = api.onDownloadProgress((p) => {
-      setDlPct(p.total_bytes > 0 ? (p.downloaded_bytes / p.total_bytes) * 100 : null);
-    });
+    const offUnexpected = setUnexpectedSink(report);
+    const listenFailed = (what: string) => (e: unknown): undefined => {
+      report(`Could not listen for ${what}: ${errorMessage(e)}`);
+      return undefined;
+    };
+    const offStatus = api
+      .onStatus((s) => {
+        setStatus(s);
+        // Kept in the error area after the status moves on (K6).
+        if (s.state === "error") report(s.message || "Something went wrong (no details given).");
+      })
+      .catch(listenFailed("status updates"));
+    const offProgress = api
+      .onDownloadProgress((p) => {
+        setDlPct(p.total_bytes > 0 ? (p.downloaded_bytes / p.total_bytes) * 100 : null);
+      })
+      .catch(listenFailed("download progress"));
     return () => {
-      offStatus.then((f) => f());
-      offProgress.then((f) => f());
+      offUnexpected();
+      offStatus.then((f) => f?.());
+      offProgress.then((f) => f?.());
     };
   }, []);
 
@@ -120,27 +154,49 @@ export default function App() {
   const isTranscribing = status.state === "transcribing";
   const isSpeaking = status.state === "speaking";
 
+  const runAction: RunAction = async (failure, fn) => {
+    clearErrors();
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      console.error(`${failure}:`, e);
+      report(`${failure}: ${errorMessage(e)}`);
+      return false;
+    }
+  };
+
+  const modelLabel = (id: ModelId) => MODELS.find((m) => m.id === id)?.label ?? id;
+
+  async function refreshModels() {
+    try {
+      setModels(await api.listModels());
+    } catch (e) {
+      report(`Could not refresh the model list: ${errorMessage(e)}`);
+    }
+  }
+
   async function save() {
-    await api.saveSettings(settings!);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    setSaved(false);
+    // K2: the backend rejects with a message naming the bad field.
+    if (await runAction("Could not save settings", () => api.saveSettings(settings!))) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    }
   }
 
   async function download(id: ModelId) {
     setDownloading(id);
     setDlPct(0);
-    try {
-      await api.downloadModel(id);
-      setModels(await api.listModels());
-    } finally {
-      setDownloading(null);
-      setDlPct(null);
-    }
+    const ok = await runAction(`Could not download ${modelLabel(id)}`, () => api.downloadModel(id));
+    setDownloading(null);
+    setDlPct(null);
+    if (ok) await refreshModels();
   }
 
   async function remove(id: ModelId) {
-    await api.deleteModel(id);
-    setModels(await api.listModels());
+    await runAction(`Could not delete ${modelLabel(id)}`, () => api.deleteModel(id));
+    await refreshModels();
   }
 
   const update = <K extends keyof Settings>(k: K, v: Settings[K]) =>
@@ -176,6 +232,8 @@ export default function App() {
           </span>
         </div>
 
+        <ErrorArea errors={errors} onDismiss={dismiss} />
+
         {/* Tabs */}
         <div className="flex items-center gap-1 rounded-[calc(var(--radius)-0.25rem)] bg-[var(--color-muted)] p-1">
           <TabButton active={tab === "dictation"} onClick={() => setTab("dictation")}>
@@ -187,7 +245,7 @@ export default function App() {
         </div>
 
         {tab === "sessions" ? (
-          <SessionsCard status={status} />
+          <SessionsCard status={status} runAction={runAction} reportError={report} />
         ) : (
           <>
 
@@ -316,19 +374,20 @@ export default function App() {
           <CardContent className="pt-5 space-y-3">
             <SectionHeader icon={<Keyboard className="h-4 w-4" />} title="Shortcuts" subtitle="Global keyboard shortcuts" />
             <div className="space-y-2">
-              <div className="text-xs text-[var(--color-muted-foreground)]">Dictation</div>
-              <Input
+              <Label id="hotkey-dictation-label" htmlFor="hotkey-dictation" className="font-normal">Dictation</Label>
+              <HotkeyCapture
+                id="hotkey-dictation"
                 value={settings.hotkey}
-                onChange={(e) => update("hotkey", e.target.value)}
-                placeholder="CommandOrControl+Shift+Space"
+                onChange={(v) => update("hotkey", v)}
               />
             </div>
             <div className="space-y-2">
-              <div className="text-xs text-[var(--color-muted-foreground)]">Session record</div>
-              <Input
+              <Label id="hotkey-session-label" htmlFor="hotkey-session" className="font-normal">Session record</Label>
+              <HotkeyCapture
+                id="hotkey-session"
                 value={settings.session_hotkey}
-                onChange={(e) => update("session_hotkey", e.target.value)}
-                placeholder="CommandOrControl+Shift+R"
+                onChange={(v) => update("session_hotkey", v)}
+                clearable
               />
             </div>
           </CardContent>
@@ -345,12 +404,11 @@ export default function App() {
               checked={launchAtLogin}
               onChange={async (v) => {
                 setLaunchAtLogin(v);
-                try {
-                  await api.setAutostart(v);
-                } catch (e) {
-                  setLaunchAtLogin(!v);
-                  console.error("setAutostart failed:", e);
-                }
+                const ok = await runAction(
+                  `Could not turn ${v ? "on" : "off"} launch at login`,
+                  () => api.setAutostart(v)
+                );
+                if (!ok) setLaunchAtLogin(!v);
               }}
             />
           </CardContent>
@@ -374,10 +432,6 @@ export default function App() {
         </Card>
 
           </>
-        )}
-
-        {status.state === "error" && status.message && (
-          <div className="text-xs text-[var(--color-destructive)]">{status.message}</div>
         )}
       </div>
     </div>

@@ -9,7 +9,9 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use std::time::SystemTime;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
+use tauri_plugin_global_shortcut::{
+    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutEvent, ShortcutState,
+};
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -50,8 +52,48 @@ pub fn parse_accelerator(accel: &str) -> Result<Shortcut, String> {
     })
 }
 
+/// Keys that type text: letters, digits, Space, Enter, Tab, Backspace,
+/// punctuation, and their numpad twins. Bound with no modifier, a global
+/// shortcut would swallow that key in every app.
+fn is_typing_key(key: Code) -> bool {
+    use Code::*;
+    matches!(
+        key,
+        KeyA | KeyB | KeyC | KeyD | KeyE | KeyF | KeyG | KeyH | KeyI | KeyJ | KeyK | KeyL | KeyM
+            | KeyN | KeyO | KeyP | KeyQ | KeyR | KeyS | KeyT | KeyU | KeyV | KeyW | KeyX | KeyY
+            | KeyZ
+            | Digit0 | Digit1 | Digit2 | Digit3 | Digit4 | Digit5 | Digit6 | Digit7 | Digit8
+            | Digit9
+            | Space | Enter | Tab | Backspace
+            | Backquote | Backslash | BracketLeft | BracketRight | Comma | Equal | Minus | Period
+            | Quote | Semicolon | Slash | IntlBackslash | IntlRo | IntlYen
+            | Numpad0 | Numpad1 | Numpad2 | Numpad3 | Numpad4 | Numpad5 | Numpad6 | Numpad7
+            | Numpad8 | Numpad9 | NumpadAdd | NumpadComma | NumpadDecimal | NumpadDivide
+            | NumpadEnter | NumpadEqual | NumpadMultiply | NumpadSubtract
+    )
+}
+
+/// Whether `sc` is a typing key with no modifier, such as `Space` or `A`.
+/// F-keys, Pause, media keys and other non-typing keys may be used bare.
+pub fn needs_modifier(sc: Shortcut) -> bool {
+    let mods = Modifiers::ALT | Modifiers::CONTROL | Modifiers::SHIFT | Modifiers::SUPER;
+    !sc.mods.intersects(mods) && is_typing_key(sc.key)
+}
+
+fn needs_modifier_error(field: &str, accel: &str) -> String {
+    let mut label = field.to_string();
+    if let Some(first) = label.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    format!("{label} hotkey \"{accel}\" needs a modifier (Ctrl, Alt, Shift or Win)")
+}
+
 fn parse_field(field: &str, accel: &str) -> Result<Shortcut, String> {
-    parse_accelerator(accel).map_err(|e| format!("Invalid {field} hotkey \"{accel}\": {e}"))
+    let sc = parse_accelerator(accel).map_err(|e| format!("Invalid {field} hotkey \"{accel}\": {e}"))?;
+    if needs_modifier(sc) {
+        return Err(needs_modifier_error(field, accel));
+    }
+    Ok(sc)
 }
 
 fn same_hotkey_error(settings: &Settings) -> String {
@@ -130,35 +172,54 @@ fn register_session(app: &AppHandle, accel: &str, shortcut: Shortcut) -> Result<
         .map_err(|e| register_error("session", accel, &e))
 }
 
-/// Register the shortcuts in `settings`, each on its own, so one bad hotkey
-/// doesn't take the other down. Used at boot and to restore after a failed
-/// change. Returns every failure as one message.
+/// What `register` does with each hotkey in `settings`, decided on its own so
+/// one bad hotkey doesn't take the other down. `Err` means that hotkey is
+/// skipped and the message reported (unparsable, a bare typing key, or a
+/// session hotkey equal to the dictation one).
+#[derive(Debug, PartialEq, Eq)]
+pub struct RegisterPlan {
+    pub dictation: Result<Shortcut, String>,
+    /// `Ok(None)` when `session_hotkey` is blank.
+    pub session: Result<Option<Shortcut>, String>,
+}
+
+pub fn plan_register(settings: &Settings) -> RegisterPlan {
+    let dictation = parse_field("dictation", &settings.hotkey);
+    let session = if settings.session_hotkey.trim().is_empty() {
+        Ok(None)
+    } else {
+        match parse_field("session", &settings.session_hotkey) {
+            Ok(sc) if dictation.as_ref().ok() == Some(&sc) => Err(same_hotkey_error(settings)),
+            other => other.map(Some),
+        }
+    };
+    RegisterPlan { dictation, session }
+}
+
+/// Register the shortcuts in `settings`, each on its own (`plan_register`).
+/// Used at boot and to restore after a failed change. Returns every failure
+/// as one message.
 pub fn register(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let _ = app.global_shortcut().unregister_all();
+    let plan = plan_register(settings);
     let mut errors = Vec::new();
 
-    let dictation = match parse_field("dictation", &settings.hotkey) {
+    match plan.dictation {
         Ok(sc) => {
             if let Err(e) = register_dictation(app, &settings.hotkey, sc) {
                 errors.push(e);
             }
-            Some(sc)
         }
-        Err(e) => {
-            errors.push(e);
-            None
-        }
-    };
-    if !settings.session_hotkey.trim().is_empty() {
-        match parse_field("session", &settings.session_hotkey) {
-            Ok(sc) if Some(sc) == dictation => errors.push(same_hotkey_error(settings)),
-            Ok(sc) => {
-                if let Err(e) = register_session(app, &settings.session_hotkey, sc) {
-                    errors.push(e);
-                }
+        Err(e) => errors.push(e),
+    }
+    match plan.session {
+        Ok(Some(sc)) => {
+            if let Err(e) = register_session(app, &settings.session_hotkey, sc) {
+                errors.push(e);
             }
-            Err(e) => errors.push(e),
         }
+        Ok(None) => {}
+        Err(e) => errors.push(e),
     }
 
     if errors.is_empty() {
@@ -273,7 +334,6 @@ pub fn hide_indicator(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tauri_plugin_global_shortcut::{Code, Modifiers};
 
     fn settings(hotkey: &str, session_hotkey: &str) -> Settings {
         Settings {
@@ -388,6 +448,84 @@ mod tests {
         // Invalid even when unchanged, e.g. a bad value loaded from settings.json.
         let bad = settings("Ctrl+Shft+Space", "CommandOrControl+Shift+R");
         assert!(plan_hotkey_change(&bad, &bad.clone(), false).is_err());
+    }
+
+    const NEEDS_MOD: &str = "needs a modifier (Ctrl, Alt, Shift or Win)";
+
+    #[test]
+    fn needs_modifier_only_for_bare_typing_keys() {
+        for accel in [
+            "Space", "KeyA", "A", "z", "Digit1", "0", "Enter", "Tab", "Backspace", "Comma", "/",
+            "Backquote", "BracketLeft", "Numpad5", "NumpadEnter",
+        ] {
+            assert!(needs_modifier(parse_accelerator(accel).unwrap()), "{accel} needs a modifier");
+        }
+        for accel in [
+            "F1", "F9", "F24", "Pause", "ScrollLock", "MediaPlayPause", "AudioVolumeMute",
+            "PrintScreen", "Insert", "Escape", "ArrowUp", "CommandOrControl+Space", "Shift+KeyA",
+            "Alt+Digit1", "Super+Enter", "Ctrl+Shift+Space",
+        ] {
+            assert!(!needs_modifier(parse_accelerator(accel).unwrap()), "{accel} is allowed");
+        }
+    }
+
+    #[test]
+    fn plan_rejects_bare_typing_keys() {
+        let prev = Settings::default();
+        for accel in ["Space", "KeyA", "A", "Digit1", "Enter"] {
+            let next = Settings { hotkey: accel.into(), ..prev.clone() };
+            assert_eq!(
+                plan_hotkey_change(&prev, &next, true),
+                Err(format!("Dictation hotkey \"{accel}\" {NEEDS_MOD}"))
+            );
+            let next = Settings { session_hotkey: accel.into(), ..prev.clone() };
+            assert_eq!(
+                plan_hotkey_change(&prev, &next, true),
+                Err(format!("Session hotkey \"{accel}\" {NEEDS_MOD}"))
+            );
+        }
+    }
+
+    #[test]
+    fn plan_allows_f_keys_non_typing_keys_and_modified_keys() {
+        let prev = Settings::default();
+        for accel in ["F9", "Pause", "CommandOrControl+Space", "Shift+KeyA"] {
+            let next = settings(accel, "Alt+F10");
+            assert!(plan_hotkey_change(&prev, &next, true).unwrap().is_some(), "dictation {accel}");
+            let next = settings("Alt+F10", accel);
+            assert!(plan_hotkey_change(&prev, &next, true).unwrap().is_some(), "session {accel}");
+        }
+        // A blank session hotkey still means none, not a bare key.
+        let next = settings("F9", "");
+        let keys = plan_hotkey_change(&prev, &next, true).unwrap().unwrap();
+        assert_eq!(keys.session, None);
+    }
+
+    #[test]
+    fn plan_register_skips_a_bare_typing_key_from_settings_json() {
+        // Dictation bare: skipped with the error, session still registered.
+        let plan = plan_register(&settings("Space", "CommandOrControl+Shift+R"));
+        assert_eq!(plan.dictation, Err(format!("Dictation hotkey \"Space\" {NEEDS_MOD}")));
+        assert_eq!(plan.session, Ok(Some(parse_accelerator("CommandOrControl+Shift+R").unwrap())));
+        // Session bare: skipped with the error, dictation still registered.
+        let plan = plan_register(&settings("CommandOrControl+Shift+Space", "KeyA"));
+        assert_eq!(plan.dictation, Ok(parse_accelerator("CommandOrControl+Shift+Space").unwrap()));
+        assert_eq!(plan.session, Err(format!("Session hotkey \"KeyA\" {NEEDS_MOD}")));
+    }
+
+    #[test]
+    fn plan_register_keeps_the_existing_boot_rules() {
+        let d = Settings::default();
+        let plan = plan_register(&d);
+        assert!(plan.dictation.is_ok() && matches!(plan.session, Ok(Some(_))), "{plan:?}");
+        let plan = plan_register(&settings("F9", "  "));
+        assert_eq!(plan, RegisterPlan { dictation: Ok(parse_accelerator("F9").unwrap()), session: Ok(None) });
+        let plan = plan_register(&settings("Ctrl+Shft+Space", "Alt+F9"));
+        assert!(plan.dictation.unwrap_err().starts_with("Invalid dictation hotkey"));
+        assert!(plan.session.is_ok());
+        let plan = plan_register(&settings("Ctrl+Shift+R", "CommandOrControl+Shift+KeyR"));
+        assert!(plan.dictation.is_ok());
+        assert!(plan.session.unwrap_err().starts_with("Session hotkey \"CommandOrControl+Shift+KeyR\" is the same"));
     }
 
     #[test]

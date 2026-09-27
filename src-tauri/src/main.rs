@@ -65,6 +65,7 @@ fn main() {
             commands::delete_session,
             commands::get_session_transcript,
             commands::transcribe_session,
+            commands::take_startup_error,
         ])
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("app data dir");
@@ -76,8 +77,13 @@ fn main() {
             let app_state = AppState::new(app_data_dir, settings.clone(), recorder, transcriber);
             app.manage(app_state);
 
-            hotkey::register(app.handle(), &settings)
-                .unwrap_or_else(|e| log::error!("hotkey register failed: {e}"));
+            if let Err(e) = hotkey::register(app.handle(), &settings) {
+                log::error!("hotkey register failed: {e}");
+                // The UI isn't listening yet, so also keep the error for
+                // take_startup_error.
+                *app.state::<AppState>().startup_error.lock() = Some(e.clone());
+                emit_status(app.handle(), AppStatus::Error { message: e });
+            }
 
             // Worker: consume recorder events, translate to UI status.
             let evt_app = app.handle().clone();

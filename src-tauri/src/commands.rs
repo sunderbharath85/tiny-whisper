@@ -47,6 +47,13 @@ pub fn save_settings(
     Ok(())
 }
 
+/// Returns and clears the error from boot (hotkey registration), which happens
+/// before the UI is listening for status events.
+#[tauri::command]
+pub fn take_startup_error(state: State<'_, AppState>) -> Option<String> {
+    state.startup_error.lock().take()
+}
+
 #[tauri::command]
 pub fn list_models(state: State<'_, AppState>) -> Vec<ModelStatus> {
     ModelId::all()

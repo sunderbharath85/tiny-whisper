@@ -22,6 +22,8 @@ pub struct AppState {
     pub is_recording: Arc<AtomicBool>,
     /// Set while a session recording is active.
     pub active_session: Arc<Mutex<Option<ActiveSession>>>,
+    /// Error from boot (hotkey registration) for the UI to fetch once it loads.
+    pub startup_error: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -38,6 +40,7 @@ impl AppState {
             transcriber: Arc::new(transcriber),
             is_recording: Arc::new(AtomicBool::new(false)),
             active_session: Arc::new(Mutex::new(None)),
+            startup_error: Mutex::new(None),
         }
     }
 }

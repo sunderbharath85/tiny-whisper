@@ -32,7 +32,7 @@ const META: Record<StatusState, { label: string; dot: string; icon: ReactElement
 const ERROR_HOLD_MS = 5000;
 
 export default function Indicator() {
-  const [latest, setLatest] = useState<Status>({ state: "listening" });
+  const [latest, setLatest] = useState<Status>({ state: "idle" });
   const [heldError, setHeldError] = useState<string | null>(null);
   const holdTimer = useRef<number | null>(null);
 

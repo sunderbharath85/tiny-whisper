@@ -148,11 +148,15 @@ pub fn get_session_transcript(
 #[tauri::command]
 pub fn transcribe_session(
     app: AppHandle,
+    state: State<'_, AppState>,
     id: String,
     diarize: bool,
 ) -> Result<(), String> {
-    // Reject a bad id here so the caller gets the error, not the worker thread.
+    // Reject a bad id or a missing model here so the caller gets the error,
+    // not the worker thread.
     sessions::validate_session_id(&id).map_err(|e| e.to_string())?;
+    let model = state.settings.lock().model;
+    session_worker::check_models(&state.transcriber, model, diarize).map_err(|e| e.to_string())?;
     session_worker::spawn_transcriber(app, id, diarize);
     Ok(())
 }

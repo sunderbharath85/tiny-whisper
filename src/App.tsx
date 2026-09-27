@@ -387,6 +387,7 @@ export default function App() {
                 id="hotkey-session"
                 value={settings.session_hotkey}
                 onChange={(v) => update("session_hotkey", v)}
+                clearable
               />
             </div>
           </CardContent>

@@ -7,12 +7,14 @@ type Props = {
   id: string;
   value: string;
   onChange: (accelerator: string) => void;
+  /// Backspace/Delete while recording clears the value (blank = no shortcut).
+  clearable?: boolean;
 };
 
 /// "Press keys to record" shortcut field. Click it (or focus it and press
 /// Enter/Space), then press the new combination. Escape or leaving the field
 /// cancels; plain Tab / Shift+Tab still move focus.
-export function HotkeyCapture({ id, value, onChange }: Props) {
+export function HotkeyCapture({ id, value, onChange, clearable = false }: Props) {
   const [recording, setRecording] = useState(false);
   const [held, setHeld] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
@@ -28,6 +30,13 @@ export function HotkeyCapture({ id, value, onChange }: Props) {
     if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) return;
     e.preventDefault();
     e.stopPropagation();
+    const bare = !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
+    if (clearable && bare && (e.code === "Backspace" || e.code === "Delete")) {
+      setProblem(null);
+      stop();
+      onChange("");
+      return;
+    }
     const r = acceleratorFromEvent(e);
     switch (r.kind) {
       case "cancel":
@@ -110,7 +119,7 @@ export function HotkeyCapture({ id, value, onChange }: Props) {
         {problem
           ? problem
           : recording
-          ? "Hold Ctrl, Alt, Shift or Win and press a key. Esc cancels."
+          ? `Hold Ctrl, Alt, Shift or Win and press a key. Esc cancels.${clearable ? " Backspace clears." : ""}`
           : "Click or press Enter to record a new shortcut."}
       </div>
     </div>

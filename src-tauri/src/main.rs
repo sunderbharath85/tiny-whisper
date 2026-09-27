@@ -70,6 +70,8 @@ fn main() {
             let app_data_dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&app_data_dir).ok();
             std::fs::create_dir_all(config::models_dir(&app_data_dir)).ok();
+            // Finish recordings cut off by a quit or crash (C-02).
+            sessions::recover(&app_data_dir);
 
             let settings: Settings = config::load(&app_data_dir);
             let transcriber = Transcriber::new(config::models_dir(&app_data_dir));

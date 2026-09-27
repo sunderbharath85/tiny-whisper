@@ -20,6 +20,11 @@ pub struct SessionMeta {
     pub model_used: Option<ModelId>,
     pub speaker_count: Option<u8>,
     pub has_transcript: bool,
+    /// True from the moment a recording starts until its writer finishes. A
+    /// session still in progress at startup was cut off by a quit or crash
+    /// and is repaired by `recover` (C-02). Older meta files lack the field.
+    #[serde(default)]
+    pub in_progress: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -151,6 +156,7 @@ pub fn list(app_data: &Path) -> Result<Vec<SessionMeta>> {
         }
         let id = entry.file_name().to_string_lossy().into_owned();
         match read_meta(app_data, &id) {
+            Ok(meta) if meta.in_progress => log::debug!("skipping in-progress session {id}"),
             Ok(meta) => out.push(meta),
             Err(e) => log::warn!("skipping malformed session {id}: {e}"),
         }
@@ -167,6 +173,122 @@ pub fn delete(app_data: &Path, id: &str) -> Result<()> {
     }
     ensure_in_sessions_dir(app_data, &dir)?;
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Startup recovery (C-02). A session folder with `audio.wav` whose
+/// `meta.json` is missing, unreadable or still in progress was cut off by a
+/// quit or crash: repair its WAV header and write a finished meta, so it shows
+/// up in `list()`. Folders whose names are not session ids are left alone.
+/// Returns the recovered ids.
+pub fn recover(app_data: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(sessions_dir(app_data)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if validate_session_id(&id).is_err() || !needs_recovery(app_data, &id) {
+            continue;
+        }
+        match recover_session(app_data, &id) {
+            Ok(meta) => {
+                log::info!("recovered session {id} ({:.1}s)", meta.duration_secs);
+                out.push(id);
+            }
+            Err(e) => log::warn!("could not recover session {id}: {e}"),
+        }
+    }
+    out
+}
+
+fn needs_recovery(app_data: &Path, id: &str) -> bool {
+    let has_audio = audio_path(app_data, id).is_ok_and(|p| p.is_file());
+    has_audio && !matches!(read_meta(app_data, id), Ok(m) if !m.in_progress)
+}
+
+/// Rebuild a finished meta for `id` from its WAV, repairing the header first.
+/// `created_at` comes from the provisional meta if there is one, else the id.
+pub fn recover_session(app_data: &Path, id: &str) -> Result<SessionMeta> {
+    let audio = audio_path(app_data, id)?;
+    repair_wav_header(&audio)?;
+    let reader = hound::WavReader::open(&audio)?;
+    let duration_secs = reader.duration() as f32 / reader.spec().sample_rate as f32;
+    let created_at = match read_meta(app_data, id) {
+        Ok(m) => m.created_at,
+        Err(_) => created_at_from_id(id),
+    };
+    let transcript = read_transcript(app_data, id).ok();
+    let meta = SessionMeta {
+        id: id.to_string(),
+        created_at,
+        duration_secs,
+        model_used: transcript.as_ref().map(|t| t.model),
+        speaker_count: None,
+        has_transcript: transcript.is_some(),
+        in_progress: false,
+    };
+    write_meta(app_data, &meta)?;
+    Ok(meta)
+}
+
+/// `2026-04-24T15-12-09Z` -> `2026-04-24T15:12:09Z` (the writer's format).
+/// `id` must already be valid.
+fn created_at_from_id(id: &str) -> String {
+    format!("{}{}", &id[..11], id[11..].replace('-', ":"))
+}
+
+/// Make the RIFF and `data` sizes in a WAV header match the bytes on disk. A
+/// writer killed before `finalize` leaves them at its last `flush` (or 0), but
+/// the samples written after that are still in the file. A trailing partial
+/// frame is cut off.
+fn repair_wav_header(path: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let file_len = f.metadata()?.len();
+    let mut riff = [0u8; 12];
+    f.read_exact(&mut riff)?;
+    if &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
+        return Err(anyhow!("not a WAV file"));
+    }
+    // Walk the chunks up to `data`, taking the frame size from `fmt `.
+    let mut pos = 12u64;
+    let mut block_align = 0u64;
+    let data_start = loop {
+        let mut chunk = [0u8; 8];
+        f.seek(SeekFrom::Start(pos))?;
+        f.read_exact(&mut chunk)
+            .map_err(|_| anyhow!("WAV has no data chunk"))?;
+        let size = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) as u64;
+        match &chunk[0..4] {
+            b"data" => break pos + 8,
+            b"fmt " => {
+                let mut fmt = [0u8; 14];
+                f.read_exact(&mut fmt)?;
+                block_align = u16::from_le_bytes([fmt[12], fmt[13]]) as u64;
+            }
+            _ => {}
+        }
+        pos += 8 + size + (size & 1);
+    };
+    if block_align == 0 {
+        return Err(anyhow!("WAV has no usable fmt chunk"));
+    }
+
+    let data_len = file_len.saturating_sub(data_start) / block_align * block_align;
+    let riff_len =
+        u32::try_from(data_start - 8 + data_len).map_err(|_| anyhow!("WAV too large to repair"))?;
+    if data_start + data_len < file_len {
+        f.set_len(data_start + data_len)?;
+    }
+    f.seek(SeekFrom::Start(4))?;
+    f.write_all(&riff_len.to_le_bytes())?;
+    f.seek(SeekFrom::Start(data_start - 4))?;
+    f.write_all(&(data_len as u32).to_le_bytes())?;
     Ok(())
 }
 
@@ -188,6 +310,7 @@ fn ensure_in_sessions_dir(app_data: &Path, dir: &Path) -> Result<()> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const VALID_ID: &str = "2026-04-24T15-12-09Z";
@@ -250,7 +373,61 @@ pub(crate) mod tests {
             model_used: None,
             speaker_count: None,
             has_transcript: false,
+            in_progress: false,
         }
+    }
+
+    fn provisional(id: &str) -> SessionMeta {
+        SessionMeta {
+            duration_secs: 0.0,
+            in_progress: true,
+            ..meta(id)
+        }
+    }
+
+    fn sample(i: usize) -> i16 {
+        (i % 1000) as i16
+    }
+
+    /// A 16kHz mono PCM16 WAV as a writer killed after its last flush leaves
+    /// it: the header counts `in_header` samples, the file holds `on_disk`.
+    fn write_cut_off_wav(path: &Path, in_header: usize, on_disk: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..in_header {
+            w.write_sample(sample(i)).unwrap();
+        }
+        w.finalize().unwrap();
+        let tail: Vec<u8> = (in_header..on_disk)
+            .flat_map(|i| sample(i).to_le_bytes())
+            .collect();
+        append_bytes(path, &tail);
+    }
+
+    fn append_bytes(path: &Path, bytes: &[u8]) {
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        f.write_all(bytes).unwrap();
+    }
+
+    /// The RIFF and data sizes as `WavWriter::create` leaves them: 0.
+    fn zero_header_sizes(path: &Path) {
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes[4..8].fill(0);
+        bytes[40..44].fill(0);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn samples_in(path: &Path) -> Vec<i16> {
+        hound::WavReader::open(path)
+            .unwrap()
+            .samples::<i16>()
+            .map(|s| s.unwrap())
+            .collect()
     }
 
     fn transcript() -> Transcript {
@@ -401,5 +578,93 @@ pub(crate) mod tests {
 
         let ids: Vec<String> = list(app).unwrap().into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec![VALID_ID.to_string()]);
+    }
+
+    #[test]
+    fn recovers_provisional_meta_with_flushed_wav() {
+        let tmp = TempAppData::new("recover-provisional");
+        let app = &tmp.0;
+        write_meta(app, &provisional(VALID_ID)).unwrap();
+        let audio = audio_path(app, VALID_ID).unwrap();
+        // Last flush at 1 s, killed at 1.5 s.
+        write_cut_off_wav(&audio, 16_000, 24_000);
+        assert!(
+            list(app).unwrap().is_empty(),
+            "in-progress sessions are hidden"
+        );
+
+        assert_eq!(recover(app), vec![VALID_ID.to_string()]);
+
+        let listed = list(app).unwrap();
+        assert_eq!(listed.len(), 1);
+        let m = &listed[0];
+        assert_eq!(m.id, VALID_ID);
+        assert!(!m.in_progress);
+        assert_eq!(m.duration_secs, 1.5);
+        assert_eq!(m.created_at, provisional(VALID_ID).created_at);
+        let expected: Vec<i16> = (0..24_000).map(sample).collect();
+        assert_eq!(samples_in(&audio), expected);
+        // Nothing left to do on the next start.
+        assert!(recover(app).is_empty());
+    }
+
+    #[test]
+    fn recovers_missing_meta_with_unfinalized_header() {
+        let tmp = TempAppData::new("recover-no-meta");
+        let app = &tmp.0;
+        let id = "2026-04-24T15-12-10Z";
+        std::fs::create_dir_all(session_dir(app, id).unwrap()).unwrap();
+        let audio = audio_path(app, id).unwrap();
+        // Header never flushed, 2 s of samples plus half a sample.
+        write_cut_off_wav(&audio, 0, 32_000);
+        zero_header_sizes(&audio);
+        append_bytes(&audio, &[0x7f]);
+        assert!(list(app).unwrap().is_empty());
+
+        assert_eq!(recover(app), vec![id.to_string()]);
+
+        let m = read_meta(app, id).unwrap();
+        assert_eq!(m.duration_secs, 2.0);
+        assert_eq!(m.created_at, "2026-04-24T15:12:10Z");
+        assert!(!m.in_progress && !m.has_transcript);
+        assert_eq!(samples_in(&audio).len(), 32_000);
+        assert_eq!(list(app).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn recover_leaves_finished_and_foreign_folders_alone() {
+        let tmp = TempAppData::new("recover-skip");
+        let app = &tmp.0;
+        // Finished session: its meta is not rewritten.
+        write_meta(app, &meta(VALID_ID)).unwrap();
+        write_cut_off_wav(&audio_path(app, VALID_ID).unwrap(), 16_000, 16_000);
+        let before = std::fs::read(meta_path(app, VALID_ID).unwrap()).unwrap();
+        // Not a session id: never touched.
+        let stray = sessions_dir(app).join("not-a-session");
+        std::fs::create_dir_all(&stray).unwrap();
+        write_cut_off_wav(&stray.join(AUDIO_FILENAME), 0, 1_600);
+        // Session folder without audio: nothing to recover.
+        let no_audio = "2026-04-24T15-12-11Z";
+        std::fs::create_dir_all(session_dir(app, no_audio).unwrap()).unwrap();
+        // Unreadable audio: logged and skipped, meta stays provisional.
+        let broken = "2026-04-24T15-12-12Z";
+        write_meta(app, &provisional(broken)).unwrap();
+        std::fs::write(audio_path(app, broken).unwrap(), b"not a wav").unwrap();
+
+        assert!(recover(app).is_empty());
+
+        let after = std::fs::read(meta_path(app, VALID_ID).unwrap()).unwrap();
+        assert_eq!(after, before);
+        assert!(!stray.join(META_FILENAME).exists());
+        assert!(!meta_path(app, no_audio).unwrap().exists());
+        assert!(read_meta(app, broken).unwrap().in_progress);
+    }
+
+    #[test]
+    fn meta_without_in_progress_field_is_finished() {
+        let json = r#"{"id":"2026-04-24T15-12-09Z","created_at":"2026-04-24T15:12:09Z",
+            "duration_secs":1.0,"model_used":null,"speaker_count":null,"has_transcript":false}"#;
+        let m: SessionMeta = serde_json::from_str(json).unwrap();
+        assert!(!m.in_progress);
     }
 }

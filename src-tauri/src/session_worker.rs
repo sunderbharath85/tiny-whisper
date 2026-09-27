@@ -19,13 +19,16 @@ use crate::transcriber::SpeakerTurn;
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
 use std::path::Path;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 
 const SAMPLE_RATE: u32 = 16_000;
 
+/// How often the writer rewrites the WAV header while recording, so a killed
+/// process still leaves a playable file (C-02).
+const FLUSH_EVERY: Duration = Duration::from_secs(1);
 
 /// Spawn a writer thread for an in-progress recording.
 pub fn spawn_writer(
@@ -53,13 +56,20 @@ pub fn spawn_writer(
                         message: format!("session write failed: {e}"),
                     },
                 );
+                // Show whatever part of the recording was salvaged.
+                if let Ok(meta) = sessions::read_meta(&app_data, &session_id) {
+                    if !meta.in_progress {
+                        let _ = app.emit("session://updated", &meta);
+                    }
+                }
             }
         }
     });
 }
 
 /// Run the writer, then always release the session: `release` clears
-/// `active_session` on success, error or panic (C-09).
+/// `active_session` on success, error or panic (C-09). On error, whatever
+/// reached disk is salvaged as a finished session.
 fn write_session(
     app_data: &Path,
     rx: Receiver<WavMsg>,
@@ -68,16 +78,23 @@ fn write_session(
     release: ReleaseSession,
 ) -> Result<SessionMeta> {
     let _release = release;
-    run_writer(app_data, rx, session_id, started_at)
+    run_writer(app_data, rx, session_id, started_at, FLUSH_EVERY).inspect_err(|_| {
+        if let Err(e) = sessions::recover_session(app_data, session_id) {
+            log::warn!("could not salvage session {session_id}: {e}");
+        }
+    })
 }
 
 /// Write `rx` to the session's `audio.wav` until `Stop` (or the recorder
-/// hangs up), then write its meta.json.
+/// hangs up). A provisional meta.json goes first and the WAV header is
+/// flushed every `flush_every`, so a quit or crash leaves a recoverable
+/// session (C-02); the final meta replaces it at the end.
 fn run_writer(
     app_data: &Path,
     rx: Receiver<WavMsg>,
     session_id: &str,
     started_at: SystemTime,
+    flush_every: Duration,
 ) -> Result<SessionMeta> {
     let dir = session_dir(app_data, session_id)?;
     std::fs::create_dir_all(&dir)?;
@@ -90,30 +107,40 @@ fn run_writer(
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(&wav_path, spec)?;
+    let mut meta = SessionMeta {
+        id: session_id.to_string(),
+        created_at: iso8601_utc(started_at),
+        duration_secs: 0.0,
+        model_used: None,
+        speaker_count: None,
+        has_transcript: false,
+        in_progress: true,
+    };
+    sessions::write_meta(app_data, &meta)?;
     let mut total_samples: u64 = 0;
+    let mut last_flush = Instant::now();
 
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            WavMsg::Chunk(chunk) => {
+    loop {
+        match rx.recv_timeout(flush_every) {
+            Ok(WavMsg::Chunk(chunk)) => {
                 for s in &chunk {
                     let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                     writer.write_sample(v)?;
                 }
                 total_samples += chunk.len() as u64;
             }
-            WavMsg::Stop => break,
+            Ok(WavMsg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if last_flush.elapsed() >= flush_every {
+            writer.flush()?;
+            last_flush = Instant::now();
         }
     }
     writer.finalize()?;
 
-    let meta = SessionMeta {
-        id: session_id.to_string(),
-        created_at: iso8601_utc(started_at),
-        duration_secs: total_samples as f32 / SAMPLE_RATE as f32,
-        model_used: None,
-        speaker_count: None,
-        has_transcript: false,
-    };
+    meta.duration_secs = total_samples as f32 / SAMPLE_RATE as f32;
+    meta.in_progress = false;
     sessions::write_meta(app_data, &meta)?;
     Ok(meta)
 }
@@ -339,6 +366,50 @@ mod writer_tests {
             id: id.into(),
             active: active.clone(),
         }
+    }
+
+    /// Poll until `done` holds; the writer runs on another thread.
+    fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wav_len(path: &Path) -> Option<u32> {
+        hound::WavReader::open(path).ok().map(|r| r.len())
+    }
+
+    #[test]
+    fn writer_keeps_wav_and_provisional_meta_valid_while_recording() {
+        assert!(FLUSH_EVERY <= Duration::from_secs(2));
+        let tmp = TempAppData::new("writer-flush");
+        let app_data = tmp.0.clone();
+        let (tx, rx) = channel();
+        let writer = std::thread::spawn(move || {
+            let flush_every = Duration::from_millis(20);
+            run_writer(&app_data, rx, ID, SystemTime::now(), flush_every)
+        });
+        let app_data = &tmp.0;
+        let audio = audio_path(app_data, ID).unwrap();
+
+        // What a crash mid-recording would leave: the header already counts
+        // the audio, and the meta says "in progress".
+        tx.send(WavMsg::Chunk(vec![0.25; 16_000])).unwrap();
+        eventually("a flushed header", || wav_len(&audio) == Some(16_000));
+        assert!(sessions::read_meta(app_data, ID).unwrap().in_progress);
+        assert!(sessions::list(app_data).unwrap().is_empty());
+
+        tx.send(WavMsg::Chunk(vec![0.25; 8_000])).unwrap();
+        tx.send(WavMsg::Stop).unwrap();
+        let meta = writer.join().unwrap().unwrap();
+        assert!(!meta.in_progress);
+        assert_eq!(meta.duration_secs, 1.5);
+        assert_eq!(wav_len(&audio), Some(24_000));
+        let listed = sessions::list(app_data).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].in_progress);
     }
 
     #[test]

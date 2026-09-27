@@ -52,9 +52,9 @@ fn run_writer(
 ) -> Result<()> {
     let state = app.state::<AppState>();
     let app_data = state.app_data_dir.clone();
-    let dir = session_dir(&app_data, session_id);
+    let dir = session_dir(&app_data, session_id)?;
     std::fs::create_dir_all(&dir)?;
-    let wav_path = audio_path(&app_data, session_id);
+    let wav_path = audio_path(&app_data, session_id)?;
 
     let spec = hound::WavSpec {
         channels: 1,
@@ -118,7 +118,7 @@ fn run_transcriber(app: &AppHandle, session_id: &str, diarize: bool) -> Result<(
     let app_data = state.app_data_dir.clone();
     let settings: Settings = state.settings.lock().clone();
 
-    let wav_path = audio_path(&app_data, session_id);
+    let wav_path = audio_path(&app_data, session_id)?;
     if !wav_path.exists() {
         return Err(anyhow!("audio missing: {}", wav_path.display()));
     }

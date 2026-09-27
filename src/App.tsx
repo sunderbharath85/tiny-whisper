@@ -8,7 +8,7 @@ import { SessionsCard } from "@/components/SessionsCard";
 import { HotkeyCapture } from "@/components/HotkeyCapture";
 import { ErrorArea, useErrorList } from "@/components/ErrorArea";
 import { Label } from "@/components/ui/label";
-import { errorMessage, type RunAction } from "@/lib/errors";
+import { errorMessage, setUnexpectedSink, type RunAction } from "@/lib/errors";
 import {
   Check,
   Download,
@@ -111,6 +111,7 @@ export default function App() {
         }
       }
     })();
+    const offUnexpected = setUnexpectedSink(report);
     const offStatus = api.onStatus((s) => {
       setStatus(s);
       // Kept in the error area after the status moves on (K6).
@@ -120,6 +121,7 @@ export default function App() {
       setDlPct(p.total_bytes > 0 ? (p.downloaded_bytes / p.total_bytes) * 100 : null);
     });
     return () => {
+      offUnexpected();
       offStatus.then((f) => f());
       offProgress.then((f) => f());
     };

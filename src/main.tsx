@@ -1,9 +1,11 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { errorMessage, reportUnexpected } from "./lib/errors";
 import "./index.css";
 
-// Surface any uncaught error visibly — otherwise a runtime crash shows as a blank
-// white window with no console (release builds have devtools off by default).
+// Last-resort view when React itself can't mount; render errors after that
+// are shown by ErrorBoundary.
 function showFatal(msg: string) {
   const root = document.getElementById("root");
   if (!root) return;
@@ -13,15 +15,24 @@ function showFatal(msg: string) {
   </div>`;
 }
 
+// Errors outside rendering (event handlers, timers, rejected promises) are
+// logged and shown in the error area; they no longer replace the window.
+// Release builds have no visible console, so the error area is what users see.
 window.addEventListener("error", (e) => {
-  showFatal(`${e.message}\n${e.error?.stack ?? ""}\n${e.filename}:${e.lineno}:${e.colno}`);
+  console.error("Uncaught error:", e.error ?? e.message);
+  reportUnexpected(`Unexpected error: ${e.message || errorMessage(e.error)}`);
 });
 window.addEventListener("unhandledrejection", (e) => {
-  showFatal(`Unhandled promise rejection: ${String(e.reason?.stack ?? e.reason)}`);
+  console.error("Unhandled promise rejection:", e.reason);
+  reportUnexpected(`Unexpected error: ${errorMessage(e.reason)}`);
 });
 
 try {
-  createRoot(document.getElementById("root")!).render(<App />);
+  createRoot(document.getElementById("root")!).render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
 } catch (e) {
   showFatal(String((e as Error)?.stack ?? e));
 }

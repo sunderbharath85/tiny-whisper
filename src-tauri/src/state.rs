@@ -1,7 +1,7 @@
 use crate::config::Settings;
 use crate::recorder::Recorder;
 use crate::transcriber::Transcriber;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -22,6 +22,9 @@ pub struct AppState {
     pub is_recording: Arc<AtomicBool>,
     /// Set while a session recording is active.
     pub active_session: Arc<Mutex<Option<ActiveSession>>>,
+    /// Notified when a session writer ends and releases `active_session`.
+    /// Wait on it with `active_session` locked.
+    pub session_ended: Arc<Condvar>,
     /// Error from boot (hotkey registration) for the UI to fetch once it loads.
     pub startup_error: Mutex<Option<String>>,
 }
@@ -40,6 +43,7 @@ impl AppState {
             transcriber: Arc::new(transcriber),
             is_recording: Arc::new(AtomicBool::new(false)),
             active_session: Arc::new(Mutex::new(None)),
+            session_ended: Arc::new(Condvar::new()),
             startup_error: Mutex::new(None),
         }
     }

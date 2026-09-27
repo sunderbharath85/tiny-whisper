@@ -103,14 +103,21 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| {
-            // Tray app: don't quit when the last window hides. Without this,
-            // tao panics with "cannot move state from Destroyed" on Windows
-            // when the settings window is hidden (which looks like "closing"
-            // the last window to the event loop).
+        .run(|app_handle, event| {
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                if code.is_none() {
-                    api.prevent_exit();
+                match code {
+                    // Tray app: don't quit when the last window hides. Without
+                    // this, tao panics with "cannot move state from Destroyed"
+                    // on Windows when the settings window is hidden (which
+                    // looks like "closing" the last window to the event loop).
+                    None => api.prevent_exit(),
+                    // Tray Quit / app.exit: finish an active session recording
+                    // first (5.1).
+                    Some(code) => {
+                        if session_worker::hold_exit_for_session(app_handle, code) {
+                            api.prevent_exit();
+                        }
+                    }
                 }
             }
         });
@@ -269,6 +276,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_settings(app),
+            // ExitRequested stops an active session recording first.
             "quit" => app.exit(0),
             _ => {}
         })

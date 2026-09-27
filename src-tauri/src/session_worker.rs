@@ -17,8 +17,9 @@ use crate::sessions::{
 use crate::state::{ActiveSession, AppState};
 use crate::transcriber::SpeakerTurn;
 use anyhow::{anyhow, Result};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -29,6 +30,8 @@ const SAMPLE_RATE: u32 = 16_000;
 /// How often the writer rewrites the WAV header while recording, so a killed
 /// process still leaves a playable file (C-02).
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
+/// How long quitting waits for an active recording to finish (5.1).
+const EXIT_WAIT: Duration = Duration::from_secs(3);
 
 /// Spawn a writer thread for an in-progress recording.
 pub fn spawn_writer(
@@ -42,6 +45,7 @@ pub fn spawn_writer(
     let release = ReleaseSession {
         id: session_id.clone(),
         active: state.active_session.clone(),
+        ended: state.session_ended.clone(),
     };
     std::thread::spawn(move || {
         match write_session(&app_data, rx, &session_id, started_at, release) {
@@ -68,8 +72,8 @@ pub fn spawn_writer(
 }
 
 /// Run the writer, then always release the session: `release` clears
-/// `active_session` on success, error or panic (C-09). On error, whatever
-/// reached disk is salvaged as a finished session.
+/// `active_session` and wakes quit waiters on success, error or panic (C-09).
+/// On error, whatever reached disk is salvaged as a finished session.
 fn write_session(
     app_data: &Path,
     rx: Receiver<WavMsg>,
@@ -146,10 +150,11 @@ fn run_writer(
 }
 
 /// Dropped when a writer ends, however it ends: clears `active_session` if it
-/// still names this session.
+/// still names this session, and wakes anyone waiting for the writer.
 struct ReleaseSession {
     id: String,
     active: Arc<Mutex<Option<ActiveSession>>>,
+    ended: Arc<Condvar>,
 }
 
 impl Drop for ReleaseSession {
@@ -157,6 +162,79 @@ impl Drop for ReleaseSession {
         let mut active = self.active.lock();
         if active.as_ref().is_some_and(|a| a.id == self.id) {
             *active = None;
+        }
+        self.ended.notify_all();
+    }
+}
+
+/// Block until no session recording is active, or `timeout` passes. Returns
+/// whether the recording ended in time.
+pub fn wait_for_session_end(
+    active: &Mutex<Option<ActiveSession>>,
+    ended: &Condvar,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut guard = active.lock();
+    while guard.is_some() {
+        if ended.wait_until(&mut guard, deadline).timed_out() {
+            return guard.is_none();
+        }
+    }
+    true
+}
+
+const EXIT_RUNNING: u8 = 0;
+const EXIT_FINISHING: u8 = 1;
+const EXIT_READY: u8 = 2;
+static EXIT_PHASE: AtomicU8 = AtomicU8::new(EXIT_RUNNING);
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExitAction {
+    Allow,
+    /// A recording is being finished; its thread re-requests the exit.
+    Hold,
+    FinishRecordingFirst,
+}
+
+fn exit_action(phase: u8, recording: bool) -> ExitAction {
+    match phase {
+        EXIT_READY => ExitAction::Allow,
+        EXIT_FINISHING => ExitAction::Hold,
+        _ if recording => ExitAction::FinishRecordingFirst,
+        _ => ExitAction::Allow,
+    }
+}
+
+/// For `RunEvent::ExitRequested` with an exit code (tray Quit, `app.exit`).
+/// Returns true when the exit must be prevented for now: an active session
+/// recording is stopped on another thread, which waits up to `EXIT_WAIT` for
+/// the writer to finalize and then requests the exit again (5.1).
+pub fn hold_exit_for_session(app: &AppHandle, code: i32) -> bool {
+    let Some(state) = app.try_state::<AppState>() else {
+        return false;
+    };
+    let recording = state.active_session.lock().is_some();
+    match exit_action(EXIT_PHASE.load(Ordering::SeqCst), recording) {
+        ExitAction::Allow => false,
+        ExitAction::Hold => true,
+        ExitAction::FinishRecordingFirst => {
+            EXIT_PHASE.store(EXIT_FINISHING, Ordering::SeqCst);
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<AppState>();
+                if let Err(e) = state.recorder.stop_raw_capture() {
+                    log::error!("stop session recording on exit: {e}");
+                }
+                let ended =
+                    wait_for_session_end(&state.active_session, &state.session_ended, EXIT_WAIT);
+                if !ended {
+                    log::warn!("session writer still busy after {EXIT_WAIT:?}; exiting anyway");
+                }
+                EXIT_PHASE.store(EXIT_READY, Ordering::SeqCst);
+                app.exit(code);
+            });
+            true
         }
     }
 }
@@ -361,10 +439,11 @@ mod writer_tests {
         })))
     }
 
-    fn release(id: &str, active: &Active) -> ReleaseSession {
+    fn release(id: &str, active: &Active, ended: &Arc<Condvar>) -> ReleaseSession {
         ReleaseSession {
             id: id.into(),
             active: active.clone(),
+            ended: ended.clone(),
         }
     }
 
@@ -418,9 +497,10 @@ mod writer_tests {
         // A file where the session folder should go: create_dir_all fails.
         std::fs::write(sessions::sessions_dir(&tmp.0).join(ID), b"").unwrap();
         let active = active(ID);
+        let ended = Arc::new(Condvar::new());
         let (_tx, rx) = channel();
 
-        let guard = release(ID, &active);
+        let guard = release(ID, &active, &ended);
         let res = write_session(&tmp.0, rx, ID, SystemTime::now(), guard);
 
         assert!(res.is_err());
@@ -428,24 +508,35 @@ mod writer_tests {
     }
 
     #[test]
-    fn finished_writer_clears_active_session() {
+    fn finished_writer_clears_active_session_and_wakes_waiters() {
         let tmp = TempAppData::new("writer-done");
         let active = active(ID);
+        let ended = Arc::new(Condvar::new());
+        let waiter = {
+            let (active, ended) = (active.clone(), ended.clone());
+            std::thread::spawn(move || {
+                wait_for_session_end(&active, &ended, Duration::from_secs(5))
+            })
+        };
         let (tx, rx) = channel();
+        let writer = {
+            let (app_data, guard) = (tmp.0.clone(), release(ID, &active, &ended));
+            std::thread::spawn(move || write_session(&app_data, rx, ID, SystemTime::now(), guard))
+        };
+
         tx.send(WavMsg::Chunk(vec![0.1; 1_600])).unwrap();
         tx.send(WavMsg::Stop).unwrap();
 
-        let guard = release(ID, &active);
-        let meta = write_session(&tmp.0, rx, ID, SystemTime::now(), guard).unwrap();
-
-        assert_eq!(meta.duration_secs, 0.1);
+        assert_eq!(writer.join().unwrap().unwrap().duration_secs, 0.1);
+        assert!(waiter.join().unwrap(), "waiter was not woken");
         assert!(active.lock().is_none());
     }
 
     #[test]
     fn release_clears_on_panic_and_spares_a_newer_session() {
         let active = active(ID);
-        let guard = release(ID, &active);
+        let ended = Arc::new(Condvar::new());
+        let guard = release(ID, &active, &ended);
         let crashed = std::thread::spawn(move || {
             let _guard = guard;
             panic!("writer panicked");
@@ -459,7 +550,33 @@ mod writer_tests {
             id: current.into(),
             started_at: SystemTime::now(),
         });
-        drop(release(ID, &active));
+        drop(release(ID, &active, &ended));
         assert_eq!(active.lock().as_ref().unwrap().id, current);
+    }
+
+    #[test]
+    fn wait_for_session_end_times_out_while_recording() {
+        let ended = Condvar::new();
+        let idle = Mutex::new(None);
+        assert!(wait_for_session_end(&idle, &ended, Duration::ZERO));
+
+        let recording = active(ID);
+        let start = Instant::now();
+        let timeout = Duration::from_millis(50);
+        assert!(!wait_for_session_end(&recording, &ended, timeout));
+        assert!(start.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn exit_finishes_an_active_recording_once() {
+        use ExitAction::*;
+        assert_eq!(exit_action(EXIT_RUNNING, false), Allow);
+        assert_eq!(exit_action(EXIT_RUNNING, true), FinishRecordingFirst);
+        // Quit again while the recording is being finished: keep waiting.
+        assert_eq!(exit_action(EXIT_FINISHING, true), Hold);
+        assert_eq!(exit_action(EXIT_FINISHING, false), Hold);
+        // The finishing thread's own exit request goes through.
+        assert_eq!(exit_action(EXIT_READY, true), Allow);
+        assert_eq!(exit_action(EXIT_READY, false), Allow);
     }
 }

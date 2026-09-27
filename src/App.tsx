@@ -235,7 +235,7 @@ export default function App() {
         </div>
 
         {tab === "sessions" ? (
-          <SessionsCard status={status} />
+          <SessionsCard status={status} runAction={runAction} reportError={report} />
         ) : (
           <>
 

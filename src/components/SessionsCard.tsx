@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type AppStatus, type SessionMeta, type Transcript } from "../api";
+import { errorMessage, type RunAction } from "@/lib/errors";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -15,9 +16,11 @@ import {
 
 type Props = {
   status: AppStatus;
+  runAction: RunAction;
+  reportError: (message: string) => void;
 };
 
-export function SessionsCard({ status }: Props) {
+export function SessionsCard({ status, runAction, reportError }: Props) {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -43,7 +46,10 @@ export function SessionsCard({ status }: Props) {
   // Refresh list on boot and on every "updated" event.
   useEffect(() => {
     let alive = true;
-    api.listSessions().then((s) => alive && setSessions(s));
+    api
+      .listSessions()
+      .then((s) => alive && setSessions(s))
+      .catch((e) => alive && reportError(`Could not load sessions: ${errorMessage(e)}`));
     const off = api.onSessionUpdated((m) => {
       setSessions((prev) => {
         const next = prev.filter((p) => p.id !== m.id);
@@ -55,7 +61,7 @@ export function SessionsCard({ status }: Props) {
       alive = false;
       off.then((f) => f());
     };
-  }, []);
+  }, [reportError]);
 
   // Recording timer.
   useEffect(() => {
@@ -84,41 +90,32 @@ export function SessionsCard({ status }: Props) {
   }, [status]);
 
   async function start() {
-    try {
+    await runAction("Could not start the session", async () => {
       const id = await api.startSessionRecording();
       setRecordingId(id);
-    } catch (e) {
-      console.error("start session:", e);
-    }
+    });
   }
 
   async function stop() {
-    try {
-      await api.stopSessionRecording();
-    } catch (e) {
-      console.error("stop session:", e);
-    }
+    await runAction("Could not stop the session", () => api.stopSessionRecording());
   }
 
   async function transcribe(id: string) {
     setBusyId(id);
-    try {
-      await api.transcribeSession(id, diarize);
-    } catch (e) {
-      console.error("transcribe:", e);
-    } finally {
-      setBusyId(null);
-    }
+    await runAction("Could not transcribe the session", () => api.transcribeSession(id, diarize));
+    setBusyId(null);
   }
 
   async function remove(id: string) {
-    await api.deleteSession(id);
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    setTranscripts((prev) => {
-      const { [id]: _, ...rest } = prev;
-      return rest;
+    await runAction("Could not delete the session", async () => {
+      await api.deleteSession(id);
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      setTranscripts((prev) => {
+        const { [id]: _, ...rest } = prev;
+        return rest;
+      });
+      setExpanded((cur) => (cur === id ? null : cur));
     });
-    if (expanded === id) setExpanded(null);
   }
 
   async function toggleExpand(s: SessionMeta) {
@@ -128,12 +125,12 @@ export function SessionsCard({ status }: Props) {
     }
     setExpanded(s.id);
     if (s.has_transcript && !transcripts[s.id]) {
-      try {
+      const ok = await runAction("Could not load the transcript", async () => {
         const t = await api.getSessionTranscript(s.id);
         setTranscripts((prev) => ({ ...prev, [s.id]: t }));
-      } catch (e) {
-        console.error("get transcript:", e);
-      }
+      });
+      // Collapse instead of leaving the row stuck on "Loading…".
+      if (!ok) setExpanded((cur) => (cur === s.id ? null : cur));
     }
   }
 

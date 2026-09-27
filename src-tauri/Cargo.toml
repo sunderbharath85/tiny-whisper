@@ -9,7 +9,7 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "devtools"] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
@@ -49,6 +49,9 @@ version = "0.2"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# Web inspector in release builds (debug builds always have it). Off by default
+# so shipped builds have no right-click > Inspect; opt in with `--features devtools`.
+devtools = ["tauri/devtools"]
 # Enable with `cargo tauri build --features gpu` (or `--features gpu` on cargo commands).
 # Requires the Vulkan SDK on Windows/Linux; uses Metal on macOS.
 gpu = ["whisper-rs/vulkan", "parakeet-rs/directml"]

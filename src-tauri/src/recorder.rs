@@ -346,10 +346,8 @@ fn deliver(
                 }
                 match vad.process_frame(&frame) {
                     Some(crate::vad::Event::SpeechStarted) => {
-                        let mut seeded = pre_roll.clone();
-                        seeded.extend_from_slice(&frame);
-                        *phrase = seeded;
-                        pre_roll.clear();
+                        // pre_roll already ends with this frame (C-19).
+                        *phrase = std::mem::take(pre_roll);
                         let _ = evt_tx.send(RecorderEvent::SpeechStarted);
                     }
                     Some(crate::vad::Event::SpeechEnded)
@@ -526,6 +524,14 @@ mod tests {
         s.buf.lock().extend_from_slice(data);
     }
 
+    fn vad_mode() -> SessionMode {
+        SessionMode::Vad {
+            vad: Vad::default(),
+            phrase: Vec::new(),
+            pre_roll: Vec::new(),
+        }
+    }
+
     /// All chunk audio the writer got, and whether it got `Stop`.
     fn written(rx: &Receiver<WavMsg>) -> (Vec<f32>, bool) {
         let mut out = Vec::new();
@@ -656,5 +662,61 @@ mod tests {
         finish(&mut s, &seg_tx, &evt_tx);
         let (out, _) = written(&rx);
         assert_eq!(out.len(), ticks * 320); // 20ms at 16kHz per tick
+    }
+
+    #[test]
+    fn phrase_starts_with_pre_roll_without_duplicate_onset() {
+        let mut s = test_session(TARGET_SR, 1, vad_mode());
+        let (seg_tx, _seg_rx) = channel();
+        let (evt_tx, evt_rx) = channel();
+
+        // Every frame is a distinct constant so a repeat is visible: 10 quiet
+        // frames, then 3 loud ones. The VAD fires on the 3rd loud frame.
+        let frames: Vec<Vec<f32>> = (0..13)
+            .map(|i| {
+                let level = if i < 10 {
+                    0.0001 * (i + 1) as f32
+                } else {
+                    0.1 * (i - 9) as f32
+                };
+                vec![level; FRAME_SAMPLES_16K]
+            })
+            .collect();
+        callback(&s, &frames.concat());
+        drain_tick(&mut s, &seg_tx, &evt_tx);
+
+        let events: Vec<RecorderEvent> = evt_rx.try_iter().collect();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RecorderEvent::SpeechStarted)));
+        let SessionMode::Vad {
+            phrase, pre_roll, ..
+        } = &s.mode
+        else {
+            unreachable!()
+        };
+        let expected: Vec<f32> = frames[13 - PRE_ROLL_FRAMES..].concat();
+        assert_eq!(phrase.len(), PRE_ROLL_FRAMES * FRAME_SAMPLES_16K);
+        assert_eq!(*phrase, expected);
+        assert!(pre_roll.is_empty());
+    }
+
+    #[test]
+    fn stop_flushes_resampler_tail_into_open_phrase() {
+        let mut s = test_session(48_000, 1, vad_mode());
+        let (seg_tx, seg_rx) = channel();
+        let (evt_tx, _evt_rx) = channel();
+
+        // 0.5s of speech-level tone: the phrase opens and never closes.
+        let input = sine(440.0, 48_000, 24_000);
+        for data in input.chunks(960) {
+            callback(&s, data);
+            drain_tick(&mut s, &seg_tx, &evt_tx);
+        }
+        end_session(s, RecorderEvent::SessionStopped, &seg_tx, &evt_tx);
+
+        let segs: Vec<Segment> = seg_rx.try_iter().collect();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].len(), 8_000, "all 0.5s of audio reaches the phrase");
     }
 }

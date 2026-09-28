@@ -37,6 +37,15 @@ pub fn prepare(text: &str) -> Result<()> {
 /// Must be called from the main thread on macOS — enigo calls
 /// TSMGetInputSourceProperty which asserts it runs on the main dispatch queue.
 pub fn inject_keys() -> Result<()> {
+    // Without Accessibility permission macOS drops synthetic keystrokes
+    // without any error, so the paste would silently do nothing.
+    #[cfg(target_os = "macos")]
+    if !macos::accessibility_trusted() {
+        return Err(anyhow!(
+            "Pasting needs Accessibility permission. Allow tiny-whisper in System Settings → \
+             Privacy & Security → Accessibility, then try again. The text is on the clipboard."
+        ));
+    }
     let mut enigo = Enigo::new(&Settings::default())?;
     #[cfg(target_os = "macos")]
     let mod_key = Key::Meta;
@@ -47,6 +56,64 @@ pub fn inject_keys() -> Result<()> {
     enigo.key(Key::Unicode('v'), Direction::Click)?;
     enigo.key(mod_key, Direction::Release)?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    type CFTypeRef = *const c_void;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        static kAXTrustedCheckOptionPrompt: CFTypeRef;
+        fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: CFTypeRef;
+        static kCFTypeDictionaryKeyCallBacks: c_void;
+        static kCFTypeDictionaryValueCallBacks: c_void;
+        fn CFDictionaryCreate(
+            allocator: CFTypeRef,
+            keys: *const CFTypeRef,
+            values: *const CFTypeRef,
+            count: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> CFTypeRef;
+        fn CFRelease(cf: CFTypeRef);
+    }
+
+    /// Whether this process may send keystrokes to other apps. The first
+    /// check that finds it untrusted also shows the system prompt that leads
+    /// to System Settings; later checks stay quiet.
+    pub fn accessibility_trusted() -> bool {
+        static PROMPTED: AtomicBool = AtomicBool::new(false);
+        let prompt = !PROMPTED.swap(true, Ordering::SeqCst);
+        unsafe {
+            if !prompt {
+                return AXIsProcessTrustedWithOptions(std::ptr::null());
+            }
+            let keys = [kAXTrustedCheckOptionPrompt];
+            let values = [kCFBooleanTrue];
+            let options = CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks,
+            );
+            let trusted = AXIsProcessTrustedWithOptions(options);
+            if !options.is_null() {
+                CFRelease(options);
+            }
+            trusted
+        }
+    }
 }
 
 #[cfg(test)]

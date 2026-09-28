@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
-import { acceleratorFromEvent, acceleratorLabels, heldModifiers } from "@/lib/accelerator";
+import { MODIFIER_NAMES, acceleratorFromEvent, acceleratorLabels, heldModifiers } from "@/lib/accelerator";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -119,7 +119,7 @@ export function HotkeyCapture({ id, value, onChange, clearable = false }: Props)
         {problem
           ? problem
           : recording
-          ? `Hold Ctrl, Alt, Shift or Win and press a key. Esc cancels.${clearable ? " Backspace clears." : ""}`
+          ? `Hold ${MODIFIER_NAMES} and press a key. Esc cancels.${clearable ? " Backspace clears." : ""}`
           : "Click or press Enter to record a new shortcut."}
       </div>
     </div>

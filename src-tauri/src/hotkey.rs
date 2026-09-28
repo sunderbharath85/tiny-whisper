@@ -80,12 +80,18 @@ pub fn needs_modifier(sc: Shortcut) -> bool {
     !sc.mods.intersects(mods) && is_typing_key(sc.key)
 }
 
+/// The modifier keys, as the UI names them on this platform.
+#[cfg(target_os = "macos")]
+const MODIFIER_NAMES: &str = "Cmd, Ctrl, Option or Shift";
+#[cfg(not(target_os = "macos"))]
+const MODIFIER_NAMES: &str = "Ctrl, Alt, Shift or Win";
+
 fn needs_modifier_error(field: &str, accel: &str) -> String {
     let mut label = field.to_string();
     if let Some(first) = label.get_mut(0..1) {
         first.make_ascii_uppercase();
     }
-    format!("{label} hotkey \"{accel}\" needs a modifier (Ctrl, Alt, Shift or Win)")
+    format!("{label} hotkey \"{accel}\" needs a modifier ({MODIFIER_NAMES})")
 }
 
 fn parse_field(field: &str, accel: &str) -> Result<Shortcut, String> {
@@ -513,9 +519,15 @@ mod tests {
         assert_eq!(keys.session, None);
     }
 
+    /// `CommandOrControl+Shift+KeyR` spelled with this platform's own modifier.
+    #[cfg(target_os = "macos")]
+    const CMD_OR_CTRL_SHIFT_R: &str = "Super+Shift+R";
+    #[cfg(not(target_os = "macos"))]
+    const CMD_OR_CTRL_SHIFT_R: &str = "Ctrl+Shift+R";
+
     #[test]
     fn rejects_same_dictation_and_session_hotkey() {
-        let err = parse_hotkeys(&settings("Ctrl+Shift+R", "CommandOrControl+Shift+KeyR")).unwrap_err();
+        let err = parse_hotkeys(&settings(CMD_OR_CTRL_SHIFT_R, "CommandOrControl+Shift+KeyR")).unwrap_err();
         assert!(err.starts_with("Session hotkey \"CommandOrControl+Shift+KeyR\" is the same"), "{err}");
     }
 
@@ -568,6 +580,9 @@ mod tests {
         assert!(plan_hotkey_change(&bad, &bad.clone(), false).is_err());
     }
 
+    #[cfg(target_os = "macos")]
+    const NEEDS_MOD: &str = "needs a modifier (Cmd, Ctrl, Option or Shift)";
+    #[cfg(not(target_os = "macos"))]
     const NEEDS_MOD: &str = "needs a modifier (Ctrl, Alt, Shift or Win)";
 
     #[test]
@@ -641,7 +656,7 @@ mod tests {
         let plan = plan_register(&settings("Ctrl+Shft+Space", "Alt+F9"));
         assert!(plan.dictation.unwrap_err().starts_with("Invalid dictation hotkey"));
         assert!(plan.session.is_ok());
-        let plan = plan_register(&settings("Ctrl+Shift+R", "CommandOrControl+Shift+KeyR"));
+        let plan = plan_register(&settings(CMD_OR_CTRL_SHIFT_R, "CommandOrControl+Shift+KeyR"));
         assert!(plan.dictation.is_ok());
         assert!(plan.session.unwrap_err().starts_with("Session hotkey \"CommandOrControl+Shift+KeyR\" is the same"));
     }

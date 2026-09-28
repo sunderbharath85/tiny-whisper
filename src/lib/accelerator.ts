@@ -3,11 +3,19 @@
 // Output format: `[CommandOrControl+][Alt+][Shift+][Super+]<KeyboardEvent.code>`,
 // modifiers always in that order, e.g. `CommandOrControl+Shift+Space`,
 // `CommandOrControl+Shift+KeyR`, `Alt+F9`, `CommandOrControl+Alt+Digit1`.
+// On macOS the backend reads `CommandOrControl` as Cmd, so there Cmd maps to
+// `CommandOrControl` and Ctrl to `Control`:
+// `[CommandOrControl+][Control+][Alt+][Shift+]<code>`.
 // The backend parses this with global-hotkey's `HotKey::from_str`, which
 // matches key tokens case-insensitively against the same names as
 // `KeyboardEvent.code`, so the code is emitted unchanged.
 //
-// Pure: no DOM access, so it can be checked without a browser.
+// Pure apart from reading the platform once from `navigator`.
+
+const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+
+/// The modifier keys, as this platform names them.
+export const MODIFIER_NAMES = IS_MAC ? "Cmd, Ctrl, Option or Shift" : "Ctrl, Alt, Shift or Win";
 
 /// The subset of `KeyboardEvent` the mapper reads.
 export type KeyInput = {
@@ -60,10 +68,15 @@ export function isModifierCode(code: string): boolean {
 
 function modifierPrefix(e: Omit<KeyInput, "code">): string[] {
   const mods: string[] = [];
-  if (e.ctrlKey) mods.push("CommandOrControl");
+  if (IS_MAC) {
+    if (e.metaKey) mods.push("CommandOrControl");
+    if (e.ctrlKey) mods.push("Control");
+  } else if (e.ctrlKey) {
+    mods.push("CommandOrControl");
+  }
   if (e.altKey) mods.push("Alt");
   if (e.shiftKey) mods.push("Shift");
-  if (e.metaKey) mods.push("Super");
+  if (!IS_MAC && e.metaKey) mods.push("Super");
   return mods;
 }
 
@@ -90,26 +103,31 @@ export function acceleratorFromEvent(e: KeyInput): AcceleratorResult {
   if (mods.length === 0 && !FUNCTION_KEY.test(e.code)) {
     return {
       kind: "invalid",
-      reason: `Add Ctrl, Alt, Shift or Win to ${keyLabel(e.code)}. Only F-keys can be used alone.`,
+      reason: `Add ${MODIFIER_NAMES} to ${keyLabel(e.code)}. Only F-keys can be used alone.`,
     };
   }
   return { kind: "ok", accelerator: [...mods, e.code].join("+") };
 }
 
+// `CommandOrControl` is Cmd on macOS and Ctrl elsewhere, like the backend.
+const CMD_OR_CTRL = IS_MAC ? "Cmd" : "Ctrl";
+const SUPER_LABEL = IS_MAC ? "Cmd" : "Win";
+const ALT_LABEL = IS_MAC ? "Option" : "Alt";
+
 const TOKEN_LABEL: Record<string, string> = {
-  COMMANDORCONTROL: "Ctrl",
-  COMMANDORCTRL: "Ctrl",
-  CMDORCTRL: "Ctrl",
-  CMDORCONTROL: "Ctrl",
+  COMMANDORCONTROL: CMD_OR_CTRL,
+  COMMANDORCTRL: CMD_OR_CTRL,
+  CMDORCTRL: CMD_OR_CTRL,
+  CMDORCONTROL: CMD_OR_CTRL,
   CONTROL: "Ctrl",
   CTRL: "Ctrl",
-  ALT: "Alt",
-  OPTION: "Alt",
+  ALT: ALT_LABEL,
+  OPTION: ALT_LABEL,
   SHIFT: "Shift",
-  SUPER: "Win",
-  COMMAND: "Win",
-  CMD: "Win",
-  META: "Win",
+  SUPER: SUPER_LABEL,
+  COMMAND: SUPER_LABEL,
+  CMD: SUPER_LABEL,
+  META: SUPER_LABEL,
   BACKQUOTE: "`",
   BACKSLASH: "\\",
   BRACKETLEFT: "[",
@@ -135,7 +153,7 @@ const TOKEN_LABEL: Record<string, string> = {
 };
 
 /// Human label for one accelerator token (`KeyR` → `R`, `Digit1` → `1`,
-/// `CommandOrControl` → `Ctrl`). Unknown tokens are shown as-is.
+/// `CommandOrControl` → `Ctrl`, or `Cmd` on macOS). Unknown tokens are shown as-is.
 export function keyLabel(token: string): string {
   const t = token.trim();
   const upper = t.toUpperCase();

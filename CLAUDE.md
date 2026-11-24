@@ -10,6 +10,9 @@
 | Run Rust tests                 | `cargo test --manifest-path src-tauri\Cargo.toml`             | There are currently no checked-in tests, but this is the active Rust test entrypoint.                          |
 | Run a single Rust test         | `cargo test <test_name> --manifest-path src-tauri\Cargo.toml` | Use a test name filter when Rust tests are added.                                                              |
 
+| Check / set the app version    | `npm run version:check` / `npm run version:set -- 1.2.3`      | `scripts/version.mjs` keeps `package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock` in sync. |
+| Release                        | Tag `vX.Y.Z` and push                                         | `.github/workflows/release.yml` builds all platforms into a draft GitHub release; notes come from `CHANGELOG.md`. |
+
 There is currently no dedicated lint script and no frontend test runner configured in `package.json`.
 
 ## High-level architecture

@@ -245,7 +245,7 @@ function Sidebar({ page, onPage }: { page: Page; onPage: (p: Page) => void }) {
     <aside className="flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/50 px-4 pb-4 pt-6">
       <div className="px-2">
         <div className="display text-[26px] italic leading-none">Tiny Whisper</div>
-        <div className="eyebrow mt-2 !text-[9.5px]">On-device · v0.2</div>
+        <div className="eyebrow mt-2 !text-[9.5px]">On-device · v{__APP_VERSION__}</div>
       </div>
 
       <nav className="mt-10 space-y-0.5" aria-label="Sections">

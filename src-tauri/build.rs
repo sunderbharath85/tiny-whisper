@@ -20,6 +20,8 @@ const COMMANDS: &[&str] = &[
     "get_session_transcript",
     "transcribe_session",
     "take_startup_error",
+    "toggle_dictation",
+    "gpu_available",
 ];
 
 fn main() {

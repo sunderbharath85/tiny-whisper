@@ -12,6 +12,7 @@
 
 | Check / set the app version    | `npm run version:check` / `npm run version:set -- 1.2.3`      | `scripts/version.mjs` keeps `package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock` in sync. |
 | Release                        | Tag `vX.Y.Z` and push                                         | `.github/workflows/release.yml` builds all platforms into a draft GitHub release; notes come from `CHANGELOG.md`. |
+| Product website                | `npm run site:dev` / `npm run site:build`                     | `site\` is a separate Vite app (three.js + GSAP); `.github/workflows/pages.yml` deploys it to GitHub Pages. |
 
 There is currently no dedicated lint script and no frontend test runner configured in `package.json`.
 

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tiny Whisper — Speak, and it's typed.</title>
+    <meta name="description" content="Private, on-device dictation for macOS, Windows and Linux. Press a shortcut, talk, and your words appear wherever your cursor is. Nothing leaves your computer." />
+    <meta name="theme-color" content="#0f0e0c" />
+    <meta property="og:title" content="Tiny Whisper — Speak, and it's typed." />
+    <meta property="og:description" content="Private, on-device dictation. Nothing leaves your computer." />
+    <meta property="og:image" content="https://sunderbharath85.github.io/tiny-whisper/og.jpg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <!-- Intro curtain -->
+    <div class="loader" aria-hidden="true">
+      <div class="loader__word"><span>Tiny</span> <em>Whisper</em></div>
+      <div class="loader__count"><span data-count>0</span></div>
+    </div>
+
+    <div class="cursor" aria-hidden="true"><span></span></div>
+    <div class="grain" aria-hidden="true"></div>
+    <canvas class="field" aria-hidden="true"></canvas>
+
+    <header class="nav">
+      <a href="#top" class="nav__mark">Tiny <em>Whisper</em></a>
+      <nav class="nav__links" aria-label="Sections">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#models">Models</a>
+        <a href="#download">Download</a>
+      </nav>
+      <a class="nav__gh" data-repo href="#" target="_blank" rel="noopener">GitHub ↗</a>
+    </header>
+
+    <main id="top">
+      <!-- 01 Hero -->
+      <section class="hero">
+        <div class="hero__eyebrow mono reveal-up"><span class="dot"></span> v1.0 — On-device dictation</div>
+        <h1 class="hero__title display" data-split>
+          <span class="line">Speak, and</span>
+          <span class="line">it's <em class="ember">typed.</em></span>
+        </h1>
+        <div class="hero__foot">
+          <p class="hero__lede reveal-up">
+            Press a shortcut in any app, talk, and your words appear where the cursor is.
+            The speech model runs on your computer — nothing is ever uploaded.
+          </p>
+          <div class="hero__ctas reveal-up">
+            <a class="btn btn--ember magnetic" data-download href="#download">Download</a>
+            <button class="btn btn--ghost magnetic" data-mic type="button">
+              <span class="mic-dot"></span><span data-mic-label>Talk to this page</span>
+            </button>
+          </div>
+        </div>
+        <p class="hero__micnote mono" data-mic-note hidden>Only the loudness of your voice is measured, in this tab. Nothing is recorded.</p>
+        <div class="hero__scroll mono">Scroll<span></span></div>
+      </section>
+
+      <!-- 02 Voice → line (pinned) -->
+      <section class="morph" id="how">
+        <div class="morph__pin">
+          <div class="morph__copy">
+            <div class="mono eyebrow">01 — How it works</div>
+            <h2 class="display morph__h">
+              <span data-morph-line="0">Your voice</span>
+              <span data-morph-line="1"><em>becomes</em> a line</span>
+              <span data-morph-line="2">of text.</span>
+            </h2>
+          </div>
+          <div class="doc" aria-label="A document being dictated">
+            <div class="doc__bar"><i></i><i></i><i></i><span class="mono">message — draft</span></div>
+            <div class="doc__body">
+              <span class="doc__to mono">To: Priya</span>
+              <p class="doc__text"><span data-typed></span><span class="caret"></span></p>
+            </div>
+            <div class="doc__keys">
+              <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd>
+              <span class="mono doc__state" data-docstate>Listening…</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 03 Manifesto -->
+      <section class="manifesto">
+        <div class="mono eyebrow">02 — Private by design</div>
+        <p class="manifesto__text display" data-words>
+          Nothing you say <em>leaves your computer.</em> No account. No cloud. No subscription.
+          A model on your own machine, listening only when you ask — and forgetting the moment you stop.
+        </p>
+      </section>
+
+      <!-- 04 Features bento -->
+      <section class="features" id="features">
+        <div class="section-head">
+          <div class="mono eyebrow">03 — Features</div>
+          <h2 class="display section-title">Small app. <em>Big ears.</em></h2>
+        </div>
+
+        <div class="bento">
+          <article class="card card--wide card--dictate">
+            <div class="card__text">
+              <h3 class="display">Dictate into anything.</h3>
+              <p>Messages, email, your code editor, a browser form. One global shortcut starts listening; each pause becomes a pasted phrase.</p>
+            </div>
+            <div class="apps">
+              <span>Messages</span><span>Code editor</span><span>Email</span><span>Docs</span><span>Terminal</span><span>Notes</span><span>Browser</span><span>Chat</span>
+            </div>
+            <div class="bigkeys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd></div>
+          </article>
+
+          <article class="card card--sessions">
+            <h3 class="display">Meetings, kept.</h3>
+            <p>Record a whole conversation. Transcribe it later with every speaker labelled.</p>
+            <div class="speakers">
+              <div class="speakers__bar"><i style="--w:50%;--c:var(--ember)"></i><i style="--w:28%;--c:var(--sky)"></i><i style="--w:22%;--c:var(--moss)"></i></div>
+              <div class="speakers__line"><b style="color:var(--ember)">Ana</b> Let's agree what ships in 1.0.</div>
+              <div class="speakers__line"><b style="color:var(--sky)">Sam</b> Onboarding has to be in.</div>
+              <div class="speakers__line"><b style="color:var(--moss)">Lee</b> And export to Markdown.</div>
+            </div>
+          </article>
+
+          <article class="card card--history">
+            <h3 class="display">Nothing gets lost.</h3>
+            <p>Pasted into the wrong window? Every phrase waits in Recent — one click copies it back.</p>
+            <ol class="history">
+              <li><span class="mono">just now</span> Moving standup to 10:30 for Berlin.</li>
+              <li><span class="mono">2 min</span> Send Priya the revised estimate.</li>
+              <li><span class="mono">9 min</span> The build is green again.</li>
+            </ol>
+          </article>
+
+          <article class="card card--wide card--zero">
+            <div class="zero">
+              <span class="display zero__n" data-zero>0</span>
+              <span class="mono zero__unit">bytes of audio uploaded. Ever.</span>
+            </div>
+            <p>Transcription runs on Whisper or NVIDIA Parakeet models on your own CPU or GPU. The only time it touches the network is to download a model you picked.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- 05 The app -->
+      <section class="showcase">
+        <div class="section-head center">
+          <div class="mono eyebrow">04 — The app</div>
+          <h2 class="display section-title">Quiet until <em>you speak.</em></h2>
+        </div>
+        <div class="window">
+          <div class="window__bar"><i></i><i></i><i></i><span class="mono">Tiny Whisper</span></div>
+          <img src="shots/dictate.jpg" alt="Tiny Whisper's Dictate screen: a ring of light that reacts while you speak, and a list of recent phrases." width="2080" height="1440" />
+        </div>
+      </section>
+
+      <section class="screens">
+        <div class="screens__track">
+          <figure class="screen">
+            <img src="shots/sessions.jpg" alt="The Sessions screen with a diarized transcript and talk-time per speaker." loading="lazy" width="2080" height="1440" />
+            <figcaption><span class="mono">Sessions</span> Transcripts with speakers, copy as Markdown.</figcaption>
+          </figure>
+          <figure class="screen">
+            <img src="shots/models.jpg" alt="The Models screen comparing speed and accuracy." loading="lazy" width="2080" height="1440" />
+            <figcaption><span class="mono">Models</span> Pick speed or accuracy. Switch any time.</figcaption>
+          </figure>
+          <figure class="screen">
+            <img src="shots/welcome.jpg" alt="First-run setup: download a model, press the shortcut, talk." loading="lazy" width="2080" height="1440" />
+            <figcaption><span class="mono">First run</span> Talking within a minute of installing.</figcaption>
+          </figure>
+          <figure class="screen">
+            <img src="shots/settings.jpg" alt="Settings: shortcuts, language, processor and launch at login." loading="lazy" width="2080" height="1440" />
+            <figcaption><span class="mono">Settings</span> Saves as you change it. Light and dark.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- 06 Models -->
+      <section class="models" id="models">
+        <div class="section-head">
+          <div class="mono eyebrow">05 — Models</div>
+          <h2 class="display section-title">Choose your <em>ear.</em></h2>
+        </div>
+        <ul class="mlist" data-models></ul>
+      </section>
+
+      <!-- 07 Download -->
+      <section class="download" id="download">
+        <h2 class="display download__title" data-split>
+          <span class="line">Say hello to</span>
+          <span class="line"><em class="ember">Tiny Whisper.</em></span>
+        </h2>
+        <div class="platforms">
+          <a class="platform magnetic" data-os="mac" data-release href="#"><span class="mono">macOS</span><b>Apple Silicon</b><small>.dmg · Metal GPU</small></a>
+          <a class="platform magnetic" data-os="mac" data-release href="#"><span class="mono">macOS</span><b>Intel</b><small>.dmg</small></a>
+          <a class="platform magnetic" data-os="win" data-release href="#"><span class="mono">Windows</span><b>10 &amp; 11</b><small>.msi · .exe</small></a>
+          <a class="platform magnetic" data-os="linux" data-release href="#"><span class="mono">Linux</span><b>x64</b><small>.AppImage · .deb</small></a>
+        </div>
+        <p class="download__note mono">Version 1.0 · All releases and the source are on <a data-repo href="#" target="_blank" rel="noopener">GitHub</a>.</p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer__row mono">
+        <span>On-device speech recognition</span>
+        <span><a data-repo href="#" target="_blank" rel="noopener">GitHub</a> · <a data-releases href="#" target="_blank" rel="noopener">Releases</a> · <a data-changelog href="#" target="_blank" rel="noopener">Changelog</a></span>
+      </div>
+      <div class="footer__mark display" aria-hidden="true">Tiny <em>Whisper</em></div>
+    </footer>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

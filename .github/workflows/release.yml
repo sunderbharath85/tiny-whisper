@@ -1,44 +1,96 @@
 name: Release
 
-# Push a tag like v1.0.0 (matching the version in package.json, Cargo.toml and
-# tauri.conf.json — see scripts/version.mjs) to build installers for every
-# platform and attach them to a DRAFT GitHub release. Review it, then publish.
+# Two ways to release (both build every platform into a DRAFT GitHub release
+# that you review and publish):
+#   • Actions → Release → Run workflow on main, with a version like 1.0.0.
+#     The tag v1.0.0 is created on main's current commit if it doesn't exist.
+#   • Or push a tag yourself: git tag v1.0.0 && git push origin v1.0.0
+# Either way the version must match package.json, Cargo.toml and
+# tauri.conf.json (see scripts/version.mjs), and CHANGELOG.md supplies the notes.
 on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing tag to (re)build, e.g. v1.0.0"
+      version:
+        description: "Version to release, e.g. 1.0.0 (tag v1.0.0 is created from this branch if missing)"
         required: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ github.event.inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 env:
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  REQUESTED: ${{ github.event.inputs.version || github.ref_name }}
 
 jobs:
   prepare:
     name: Prepare draft release
     runs-on: ubuntu-latest
     outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
       release_id: ${{ steps.release.outputs.result }}
       version: ${{ steps.version.outputs.version }}
     steps:
+      # Find the commit to build: the tag's, or (when releasing from the
+      # Actions tab with a new version) the commit the run was started on.
+      - name: Resolve tag
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const raw = process.env.REQUESTED.trim();
+            const tag = raw.startsWith("v") ? raw : `v${raw}`;
+            if (!/^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(tag)) {
+              throw new Error(`"${raw}" is not a version like 1.0.0`);
+            }
+            core.setOutput("tag", tag);
+            try {
+              const { data } = await github.rest.git.getRef({ ...context.repo, ref: `tags/${tag}` });
+              let sha = data.object.sha;
+              if (data.object.type === "tag") {
+                // Annotated tag: follow it to the commit.
+                sha = (await github.rest.git.getTag({ ...context.repo, tag_sha: sha })).data.object.sha;
+              }
+              core.info(`${tag} exists at ${sha}`);
+              core.setOutput("sha", sha);
+              core.setOutput("create", "false");
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              const main = `refs/heads/${context.payload.repository.default_branch}`;
+              if (context.ref !== main) {
+                throw new Error(`${tag} doesn't exist. Start the run from ${main.slice(11)} to create it.`);
+              }
+              core.info(`${tag} will be created at ${context.sha}`);
+              core.setOutput("sha", context.sha);
+              core.setOutput("create", "true");
+            }
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ steps.resolve.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - name: Tag matches app version
         id: version
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: echo "version=$(node scripts/version.mjs --tag "$TAG")" >> "$GITHUB_OUTPUT"
+      # Only after the version check, so a mismatch never leaves a stray tag.
+      - name: Create tag
+        if: steps.resolve.outputs.create == 'true'
+        uses: actions/github-script@v7
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        with:
+          script: |
+            await github.rest.git.createRef({ ...context.repo, ref: `refs/tags/${process.env.TAG}`, sha: process.env.SHA });
+            core.info(`Created ${process.env.TAG} at ${process.env.SHA}`);
       - name: Release notes from CHANGELOG.md
         run: |
           v="${{ steps.version.outputs.version }}"
@@ -55,6 +107,8 @@ jobs:
       - name: Create (or reuse) the draft release
         id: release
         uses: actions/github-script@v7
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
         with:
           result-encoding: string
           script: |
@@ -66,7 +120,7 @@ jobs:
             const all = await github.paginate(github.rest.repos.listReleases, context.repo);
             const existing = all.find((r) => r.tag_name === tag);
             if (existing) {
-              if (!existing.draft) core.setFailed(`${tag} is already published; bump the version instead.`);
+              if (!existing.draft) throw new Error(`${tag} is already published; bump the version instead.`);
               await github.rest.repos.updateRelease({ ...context.repo, release_id: existing.id, name, body });
               return String(existing.id);
             }
@@ -104,7 +158,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'

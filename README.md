@@ -43,11 +43,15 @@ macOS (Apple Silicon + Intel), Windows and Linux.
 1. Add the release notes under a new heading in `CHANGELOG.md`, e.g. `## [1.0.1] - 2026-12-01`.
 2. Set the version everywhere at once: `npm run version:set -- 1.0.1`
    (updates `package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`).
-3. Commit, merge to `main`, then tag and push: `git tag v1.0.1 && git push origin v1.0.1`.
-4. The workflow checks the tag matches the version, builds every platform and
-   attaches the installers to a **draft** GitHub release. Review it and click *Publish*.
+3. Commit and merge to `main`.
+4. Start the release: **Actions → Release → Run workflow** on `main`, version `1.0.1`.
+   The workflow creates the tag `v1.0.1` on `main` (or push it yourself:
+   `git tag v1.0.1 && git push origin v1.0.1`).
+5. It checks the version matches, builds every platform and attaches the
+   installers to a **draft** GitHub release. Review it and click *Publish*.
 
-To rebuild an existing tag, run the *Release* workflow manually from the Actions tab.
+Running the workflow again for a version whose tag already exists rebuilds it
+into the same draft.
 
 **Code signing (optional, via repository secrets):**
 

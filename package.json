@@ -12,7 +12,8 @@
     "version:set": "node scripts/version.mjs",
     "site:dev": "vite --config site/vite.config.js",
     "site:build": "vite build --config site/vite.config.js",
-    "site:shots": "node scripts/site-shots.cjs"
+    "site:shots": "node scripts/site-shots.cjs",
+    "readme:shots": "node scripts/readme-shots.cjs"
   },
   "dependencies": {
     "@fontsource-variable/inter-tight": "^5.3.0",

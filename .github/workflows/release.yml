@@ -234,4 +234,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
+          # Pin npm: the action guesses the package manager from lockfiles
+          # and picks bun when bun.lock is present, which the runners lack.
+          tauriScript: npm run tauri
           args: ${{ matrix.args }} ${{ steps.winsign.outputs.args }}

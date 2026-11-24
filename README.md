@@ -59,6 +59,18 @@ To rebuild an existing tag, run the *Release* workflow manually from the Actions
 `ci.yml` type-checks and builds the frontend and runs `cargo check` / `cargo test`
 on every pull request and push to `main`.
 
+## Website
+
+The product site lives in `site/` (Vite, three.js, GSAP, Lenis) and is published to
+GitHub Pages by `.github/workflows/pages.yml` on every push to `main` that touches it.
+One-time setup: **Settings → Pages → Source: GitHub Actions**.
+
+```bash
+npm run site:dev     # http://localhost:4173/tiny-whisper/
+npm run site:build   # → dist-site/
+npm run site:shots   # refresh site/public/shots/ from the app (needs Playwright)
+```
+
 ## Test
 
 Run Rust tests:

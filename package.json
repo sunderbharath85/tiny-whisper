@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "version:check": "node scripts/version.mjs",
-    "version:set": "node scripts/version.mjs"
+    "version:set": "node scripts/version.mjs",
+    "site:dev": "vite --config site/vite.config.js",
+    "site:build": "vite build --config site/vite.config.js",
+    "site:shots": "node scripts/site-shots.cjs"
   },
   "dependencies": {
     "@fontsource-variable/inter-tight": "^5.3.0",
@@ -32,7 +35,10 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
+    "gsap": "^3.15.1",
+    "lenis": "^1.3.28",
     "tailwindcss": "^4.2.4",
+    "three": "^0.187.0",
     "typescript": "^5.6.3",
     "vite": "^6.4.2"
   }

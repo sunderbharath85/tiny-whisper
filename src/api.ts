@@ -1,5 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { mockInvoke, mockListen } from "./lib/mock";
 
 export type Device = "cpu" | "gpu";
 
@@ -66,6 +67,12 @@ export type AppStatus =
   | { state: "transcribing_session"; session_id: string; percent: number }
   | { state: "error"; message?: string };
 
+/// Outside Tauri (plain `npm run dev` in a browser) a mock backend stands in,
+/// so the UI can be designed and screenshotted without the Rust side.
+const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const invoke: typeof tauriInvoke = inTauri ? tauriInvoke : (mockInvoke as typeof tauriInvoke);
+const listen: typeof tauriListen = inTauri ? tauriListen : (mockListen as typeof tauriListen);
+
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (s: Settings) => invoke<void>("save_settings", { settings: s }),
@@ -76,6 +83,10 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   /// Error from app setup (e.g. hotkey registration), returned once then cleared.
   takeStartupError: () => invoke<string | null>("take_startup_error"),
+  /// Start or stop dictation, the same as pressing the dictation hotkey.
+  toggleDictation: () => invoke<void>("toggle_dictation"),
+  /// Whether this build has a GPU backend compiled in.
+  gpuAvailable: () => invoke<boolean>("gpu_available"),
 
   startSessionRecording: () => invoke<string>("start_session_recording"),
   stopSessionRecording: () => invoke<void>("stop_session_recording"),
@@ -91,4 +102,7 @@ export const api = {
     listen<AppStatus>("app://status", (e) => cb(e.payload)),
   onSessionUpdated: (cb: (m: SessionMeta) => void): Promise<UnlistenFn> =>
     listen<SessionMeta>("session://updated", (e) => cb(e.payload)),
+  /// Each dictated phrase, after it has been pasted.
+  onDictationText: (cb: (text: string) => void): Promise<UnlistenFn> =>
+    listen<string>("dictation://text", (e) => cb(e.payload)),
 };

@@ -18,6 +18,8 @@
     "allow-delete-session",
     "allow-get-session-transcript",
     "allow-transcribe-session",
-    "allow-take-startup-error"
+    "allow-take-startup-error",
+    "allow-toggle-dictation",
+    "allow-gpu-available"
   ]
 }

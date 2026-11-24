@@ -171,3 +171,15 @@ pub fn delete_model(state: State<'_, AppState>, id: ModelId) -> Result<(), Strin
     let dir = config::models_dir(&state.app_data_dir);
     transcriber::delete_model_files(&dir, id).map_err(|e| e.to_string())
 }
+
+/// Start or stop dictation from the settings window (same as the hotkey).
+#[tauri::command]
+pub fn toggle_dictation(app: AppHandle) {
+    crate::hotkey::toggle_dictation(&app);
+}
+
+/// Whether this build was compiled with a GPU backend (`--features gpu`).
+#[tauri::command]
+pub fn gpu_available() -> bool {
+    cfg!(feature = "gpu")
+}

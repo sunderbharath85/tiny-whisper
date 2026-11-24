@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "tiny-whisper",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "identifier": "dev.tinywhisper.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,12 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "tiny-whisper — settings",
-        "width": 560,
-        "height": 640,
+        "title": "Tiny Whisper",
+        "width": 1040,
+        "height": 720,
         "resizable": true,
         "visible": false,
-        "label": "settings"
+        "label": "settings",
+        "minWidth": 820,
+        "minHeight": 600
       },
       {
         "label": "indicator",

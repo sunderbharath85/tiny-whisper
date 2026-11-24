@@ -21,7 +21,7 @@ use std::sync::mpsc::{channel, Receiver};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 fn main() {
@@ -65,6 +65,8 @@ fn main() {
             commands::get_session_transcript,
             commands::transcribe_session,
             commands::take_startup_error,
+            commands::toggle_dictation,
+            commands::gpu_available,
         ])
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("app data dir");
@@ -235,6 +237,8 @@ fn segment_worker(app: AppHandle, rx: Receiver<Segment>) {
         );
         let failure = match result {
             Ok(text) if !text.trim().is_empty() && text.trim() != "[BLANK_AUDIO]" => {
+                // The settings window keeps a history of recent phrases.
+                let _ = app.emit("dictation://text", text.trim());
                 // Clipboard write + 30 ms delay stay on this worker thread so the
                 // main event loop isn't blocked. Only key injection is dispatched to
                 // the main thread — TSMGetInputSourceProperty (inside enigo) asserts

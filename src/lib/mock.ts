@@ -10,6 +10,9 @@ function emit(event: string, payload: unknown) {
   handlers.get(event)?.forEach((h) => h({ payload }));
 }
 
+// Lets screenshot scripts push events (e.g. indicator states) into the page.
+if (typeof window !== "undefined") (window as unknown as { __twMock: unknown }).__twMock = { emit };
+
 export async function mockListen(event: string, cb: Handler): Promise<() => void> {
   if (!handlers.has(event)) handlers.set(event, new Set());
   handlers.get(event)!.add(cb);

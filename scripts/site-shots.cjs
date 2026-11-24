@@ -5,11 +5,14 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { chromium } = require("playwright");
 
+// Run Vite with node directly (not via npx) so kill() stops the server itself.
+const VITE = path.join(__dirname, "..", "node_modules", "vite", "bin", "vite.js");
+
 const OUT = path.join(__dirname, "..", "site", "public", "shots");
 const URL = "http://localhost:1420/";
 
 (async () => {
-  const vite = spawn("npx", ["vite", "--port", "1420", "--strictPort"], { cwd: path.join(__dirname, ".."), stdio: "ignore" });
+  const vite = spawn(process.execPath, [VITE, "--port", "1420", "--strictPort"], { cwd: path.join(__dirname, ".."), stdio: "ignore" });
   try {
     await new Promise((r) => setTimeout(r, 2500));
     const browser = await chromium.launch();

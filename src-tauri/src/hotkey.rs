@@ -305,6 +305,12 @@ fn handle_dictation(app: &AppHandle, _app_handle: &AppHandle, event: ShortcutEve
     if event.state() != ShortcutState::Pressed {
         return;
     }
+    toggle_dictation(app);
+}
+
+/// Start or stop dictation, exactly as a press of the dictation hotkey does.
+/// Also used by the settings window's dictate button.
+pub fn toggle_dictation(app: &AppHandle) {
     let state = app.state::<AppState>();
     let model = state.settings.lock().model;
     // Don't let the dictation hotkey fire while a session is being recorded —

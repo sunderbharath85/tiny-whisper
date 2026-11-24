@@ -12,12 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "tiny-whisper — settings",
-        "width": 560,
-        "height": 640,
+        "title": "Tiny Whisper",
+        "width": 1040,
+        "height": 720,
         "resizable": true,
         "visible": false,
-        "label": "settings"
+        "label": "settings",
+        "minWidth": 820,
+        "minHeight": 600
       },
       {
         "label": "indicator",

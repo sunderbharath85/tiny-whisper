@@ -178,7 +178,8 @@ impl Default for Settings {
             hotkey: "CommandOrControl+Shift+Space".into(),
             session_hotkey: default_session_hotkey(),
             model: ModelId::SmallEn,
-            device: Device::Cpu,
+            // GPU when one is found, otherwise the CPU (see gpu::effective).
+            device: Device::Gpu,
             language: "auto".into(),
         }
     }

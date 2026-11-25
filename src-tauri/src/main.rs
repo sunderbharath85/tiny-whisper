@@ -2,6 +2,7 @@
 
 mod commands;
 mod config;
+mod gpu;
 mod hotkey;
 mod models;
 mod paster;
@@ -215,7 +216,40 @@ fn event_worker(app: AppHandle, rx: Receiver<RecorderEvent>) {
     }
 }
 
+/// Load the dictation model and run it once on a second of silence, so the
+/// first phrase doesn't pay for loading it. On the GPU the first run also
+/// builds the Vulkan/Metal pipelines, which took ~9 s for small.en on an
+/// RTX 3060 (later phrases: ~0.15 s).
+fn warm_up(app: &AppHandle) {
+    match gpu::detected() {
+        Some(gpu) => log::info!("GPU: {gpu}"),
+        None if cfg!(feature = "gpu") => log::info!("GPU build, but no usable GPU found; using the CPU"),
+        None => log::info!("CPU-only build"),
+    }
+    let state = app.state::<AppState>();
+    let settings = state.settings.lock().clone();
+    if !state.transcriber.is_downloaded(settings.model) {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let silence = vec![0.0f32; 16_000];
+    match state
+        .transcriber
+        .transcribe(&silence, settings.model, settings.device, &settings.language)
+    {
+        Ok(_) => log::info!(
+            "warmed up {:?} ({:?}) in {:.1?}",
+            settings.model,
+            gpu::effective(settings.device),
+            started.elapsed()
+        ),
+        Err(e) => log::warn!("warm-up of {:?} failed: {e}", settings.model),
+    }
+}
+
 fn segment_worker(app: AppHandle, rx: Receiver<Segment>) {
+    // On this thread, so a phrase spoken during warm-up simply waits for it.
+    warm_up(&app);
     while let Ok(samples) = rx.recv() {
         if samples.len() < 1600 {
             continue; // <100ms, ignore
@@ -229,11 +263,19 @@ fn segment_worker(app: AppHandle, rx: Receiver<Segment>) {
             continue;
         }
         emit_status(&app, AppStatus::Transcribing);
+        let started = std::time::Instant::now();
         let result = state.transcriber.transcribe(
             &samples,
             settings.model,
             settings.device,
             &settings.language,
+        );
+        log::info!(
+            "transcribed {:.1}s of audio with {:?} ({:?}) in {:.2?}",
+            samples.len() as f32 / 16_000.0,
+            settings.model,
+            gpu::effective(settings.device),
+            started.elapsed()
         );
         let failure = match result {
             Ok(text) if !text.trim().is_empty() && text.trim() != "[BLANK_AUDIO]" => {

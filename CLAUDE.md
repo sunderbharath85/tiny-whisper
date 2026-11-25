@@ -7,6 +7,7 @@
 | Run the frontend only          | `npm run dev`                                                 | Outside Tauri, `src\lib\mock.ts` stands in for the backend (add `?fresh` to see first run). Good for design work. |
 | Build the frontend bundle      | `npm run build`                                               | Runs `tsc && vite build` and emits both `index.html` and `indicator.html` into `dist\`.                        |
 | Build the packaged desktop app | `npm run tauri build`                                         | Uses `npm run build` as the prebuild step.                                                                     |
+| Build the Windows GPU installer | `npm run tauri:build:vulkan`                                 | `scripts/build-vulkan.mjs`: `--features vulkan`, bundles `vulkan-1.dll`, short `CARGO_BUILD_BUILD_DIR`. Needs the Vulkan SDK. macOS GPU: `--features metal`. |
 | Run Rust tests                 | `cargo test --manifest-path src-tauri\Cargo.toml`             | There are currently no checked-in tests, but this is the active Rust test entrypoint.                          |
 | Run a single Rust test         | `cargo test <test_name> --manifest-path src-tauri\Cargo.toml` | Use a test name filter when Rust tests are added.                                                              |
 | Check / set the app version    | `npm run version:check` / `npm run version:set -- 1.2.3`      | `scripts/version.mjs` keeps `package.json`, `package-lock.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock` in sync. |

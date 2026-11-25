@@ -178,8 +178,9 @@ pub fn toggle_dictation(app: AppHandle) {
     crate::hotkey::toggle_dictation(&app);
 }
 
-/// Whether this build was compiled with a GPU backend (`--features gpu`).
+/// Whether transcription can use a GPU: this build has a GPU backend
+/// (`--features metal` or `vulkan`) and the machine has a usable GPU.
 #[tauri::command]
 pub fn gpu_available() -> bool {
-    cfg!(feature = "gpu")
+    crate::gpu::detected().is_some()
 }

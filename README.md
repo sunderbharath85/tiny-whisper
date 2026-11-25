@@ -74,7 +74,7 @@ Speed and accuracy at a glance, what's in use, what's recommended, and per-model
 </picture>
 
 ### Settings
-Changes save as you make them. Shortcuts are recorded by pressing them; language is locked for English-only models; GPU is offered only when your build supports it.
+Changes save as you make them. Shortcuts are recorded by pressing them; language is locked for English-only models; GPU is offered only when a usable GPU is found.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.jpg" />
@@ -105,7 +105,7 @@ Download the installer for your system from the [latest release](https://github.
 | System | File | Notes |
 | --- | --- | --- |
 | macOS — Apple Silicon | `.dmg` (aarch64) | Built with Metal GPU acceleration. |
-| Windows 10 / 11 | `.msi` or `.exe` | |
+| Windows 10 / 11 | `.msi` or `.exe` | Uses your GPU (Vulkan) when there is one, otherwise the CPU. |
 | Linux x64 | `.AppImage` or `.deb` | Built on Ubuntu 24.04; needs glibc 2.38 or newer. |
 
 **First launch**
@@ -207,7 +207,7 @@ Running the UI on its own uses a mock backend (`src/lib/mock.ts`) that imitates 
 | Task | Command |
 | --- | --- |
 | Type-check and build the UI | `npm run build` |
-| Package the desktop app | `npm run tauri build` (add `-- --features gpu` for Metal / CoreML on macOS) |
+| Package the desktop app | `npm run tauri build` (add `-- --features metal` for Metal / CoreML on macOS, or `-- --features vulkan` for Vulkan / DirectML on Windows, which needs the Vulkan SDK) |
 | Rust tests | `cargo test --manifest-path src-tauri/Cargo.toml` |
 | Check / set the version everywhere | `npm run version:check` / `npm run version:set -- 1.2.3` |
 | Refresh README screenshots | `npm run readme:shots` (needs Playwright with Chromium) |

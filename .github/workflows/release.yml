@@ -140,19 +140,23 @@ jobs:
           - name: macOS (Apple Silicon)
             os: macos-latest
             target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin --features gpu
+            args: --target aarch64-apple-darwin --features metal
           # No Intel macOS build: ort (Parakeet) has no prebuilt ONNX Runtime
           # for x86_64-apple-darwin.
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            args: ""
+            # GPU build: Vulkan for whisper, DirectML for Parakeet. Falls back
+            # to the CPU on PCs without a GPU (see "Vulkan SDK" below).
+            args: --features vulkan --config src-tauri/tauri.vulkan.conf.json
           - name: Linux
             # glibc 2.38+ is required by the prebuilt ONNX Runtime (see ci.yml).
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             args: ""
     runs-on: ${{ matrix.os }}
+    # whisper.cpp build flags (portable CPU code, optimized MSVC builds) live
+    # in src-tauri/.cargo/config.toml so local builds get them too.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -177,7 +181,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.target }}
+          # "-portable": whisper-rs-sys doesn't rebuild when its GGML_*/CMAKE_*
+          # env changes, so an older cache would bring back AVX-512 code and
+          # the unoptimized build.
+          key: ${{ matrix.target }}-portable
+
+      # The SDK provides glslc and the headers whisper.cpp's Vulkan backend
+      # builds against; its runtime provides vulkan-1.dll, which the installer
+      # ships next to the exe (src-tauri/tauri.vulkan.conf.json). With the
+      # loader bundled the app starts on PCs without a GPU driver and uses the
+      # CPU there. 1.4.341.1 is the SDK this build was verified with locally.
+      - name: Vulkan SDK
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.341.1
+          install_runtime: true
+          cache: true
+      - name: Bundle the Vulkan loader
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem "C:\VulkanSDK", "$env:VULKAN_SDK" -Recurse -Filter vulkan-1.dll -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if (-not $dll) { $dll = Get-Item "$env:SystemRoot\System32\vulkan-1.dll" -ErrorAction SilentlyContinue }
+          if (-not $dll) { throw "vulkan-1.dll not found after installing the Vulkan runtime" }
+          New-Item -ItemType Directory -Force src-tauri/vendor | Out-Null
+          Copy-Item $dll.FullName src-tauri/vendor/vulkan-1.dll
+          Write-Output "Bundling $($dll.FullName) $($dll.VersionInfo.FileVersion)"
+          # whisper.cpp's Vulkan shader generator nests deep enough under
+          # src-tauri\target that MSBuild passes Windows' 248-character folder
+          # limit (FTK1011), so keep cargo's intermediate files in a short dir.
+          "CARGO_BUILD_BUILD_DIR=C:\b" >> $env:GITHUB_ENV
 
       # tauri.conf.json signs with a certificate thumbprint from the
       # maintainer's machine. In CI: import WINDOWS_CERTIFICATE (base64 .pfx)

@@ -23,10 +23,20 @@ on-device transcription.
 - **Models** compares speed and accuracy at a glance, marks the model in use,
   and shows download progress per model.
 - **Settings save as you change them.** Language is a proper list (and is locked
-  for English-only models); GPU is only offered when your build supports it.
+  for English-only models); GPU is only offered when a usable GPU is found.
 - A redrawn floating indicator with live level bars; long errors show in full on hover.
 - Deleting a model or a session asks for a second click; the model in use
   can't be deleted.
+
+### Faster transcription
+- **Windows uses your GPU again.** The installer is a GPU (Vulkan) build:
+  on an RTX 3060 a phrase transcribes in about 0.2–0.5 s instead of ~3 s on
+  the CPU. PCs without a GPU get the CPU automatically, from the same installer.
+- **Much faster on the CPU, too.** Whisper is now built with compiler
+  optimizations on Windows, which earlier builds were missing.
+- The model loads and warms up when the app starts, so the first phrase is as
+  quick as the rest.
+- Fixed a crash on transcription on CPUs without AVX-512 (e.g. AMD Ryzen 5000).
 
 ### Also in 1.0
 - Live dictation with voice-activity detection: speak, pause, and the phrase is

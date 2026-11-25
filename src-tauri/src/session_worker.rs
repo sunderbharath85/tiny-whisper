@@ -260,7 +260,8 @@ fn run_transcriber(app: &AppHandle, session_id: &str, diarize: bool) -> Result<(
     let settings: Settings = state.settings.lock().clone();
 
     let active_model: ModelId = settings.model;
-    let device: Device = settings.device;
+    // Also used for diarization, so resolve "GPU, but none found" to CPU here.
+    let device: Device = crate::gpu::effective(settings.device);
     check_models(&state.transcriber, active_model, diarize)?;
 
     let wav_path = audio_path(&app_data, session_id)?;

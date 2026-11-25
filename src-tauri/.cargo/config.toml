@@ -4,3 +4,18 @@
 # MACOSX_DEPLOYMENT_TARGET and auto-detects 10.13, so we set both to override it.
 MACOSX_DEPLOYMENT_TARGET = "10.15"
 CMAKE_OSX_DEPLOYMENT_TARGET = "10.15"
+
+# Portable CPU code. whisper.cpp defaults to GGML_NATIVE=ON, which compiles for
+# the build machine's CPU: release builds made on AVX-512 CI runners crashed
+# with an illegal instruction on CPUs without it (e.g. Ryzen 5000). OFF builds
+# AVX2/FMA/F16C, no AVX-512. whisper-rs-sys forwards GGML_* env vars to CMake.
+GGML_NATIVE = "OFF"
+
+# Optimize whisper.cpp. With MSVC and the Visual Studio generator, the cmake
+# crate overwrites CMAKE_<LANG>_FLAGS_RELEASE with cc's flags minus every /O
+# flag, so ggml was compiled unoptimized (/Od) and transcription crawled. It
+# leaves the variables alone when they are already defined, so define them.
+# -MD keeps MSVC on the DLL runtime Rust uses; gcc/clang read it as "write
+# dependency files", which is harmless. MSVC accepts -O2/-DNDEBUG as well.
+CMAKE_C_FLAGS_RELEASE = "-O2 -DNDEBUG -MD"
+CMAKE_CXX_FLAGS_RELEASE = "-O2 -DNDEBUG -MD"

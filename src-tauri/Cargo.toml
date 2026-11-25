@@ -30,13 +30,14 @@ cpal = "0.15"
 rubato = "0.15"
 hound = "3.5"
 
-# whisper-rs. GPU backend is opt-in via the `gpu` cargo feature below so the
+# whisper-rs. GPU backend is opt-in via the `metal` / `vulkan` features below so the
 # default CPU build doesn't require a Vulkan SDK. `use_gpu(bool)` on
 # WhisperContextParameters toggles at runtime when a GPU backend is compiled in.
-whisper-rs = { version = "0.16", default-features = false }
+# `raw-api` re-exports whisper-rs-sys, for ggml's device list (src/gpu.rs).
+whisper-rs = { version = "0.16", default-features = false, features = ["raw-api"] }
 
-# Parakeet ASR (CTC + TDT) via ONNX Runtime. CPU by default; the `gpu` feature
-# below enables DirectML on Windows so we can match whisper's GPU toggle.
+# Parakeet ASR (CTC + TDT) via ONNX Runtime. CPU by default; the `vulkan`
+# feature below enables DirectML on Windows so we can match whisper's GPU toggle.
 parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "sortformer"] }
 # Not used directly: picks ort's features for parakeet-rs. These are ort's
 # defaults minus `copy-dylibs`, whose build script assumes cargo's old target
@@ -57,7 +58,14 @@ custom-protocol = ["tauri/custom-protocol"]
 # Web inspector in release builds (debug builds always have it). Off by default
 # so shipped builds have no right-click > Inspect; opt in with `--features devtools`.
 devtools = ["tauri/devtools"]
-# Enable with `cargo tauri build --features gpu` (or `--features gpu` on cargo commands).
-# macOS: Metal (whisper) + CoreML (parakeet). For Windows/Linux swap to:
-#   ["whisper-rs/vulkan", "parakeet-rs/directml"]
-gpu = ["whisper-rs/metal", "parakeet-rs/coreml"]
+# GPU builds. Cargo features can't differ per platform, so pick the one for
+# the platform you build on (e.g. `npm run tauri build -- --features vulkan`):
+#   macOS:   `metal`  - Metal for whisper, CoreML for Parakeet/Sortformer
+#   Windows: `vulkan` - Vulkan for whisper, DirectML for Parakeet/Sortformer.
+#            Needs the Vulkan SDK (VULKAN_SDK, glslc) to build; at runtime
+#            vulkan-1.dll ships with GPU drivers.
+# Both turn on `gpu`, which the code checks. Don't enable `gpu` on its own:
+# it would ask for a GPU backend that isn't compiled in.
+gpu = []
+metal = ["gpu", "whisper-rs/metal", "parakeet-rs/coreml"]
+vulkan = ["gpu", "whisper-rs/vulkan", "parakeet-rs/directml"]

@@ -79,6 +79,7 @@ impl Transcriber {
         device: Device,
         language: &str,
     ) -> Result<String> {
+        let device = crate::gpu::effective(device);
         self.backend_for(model.engine())
             .transcribe(samples, model, device, language)
     }

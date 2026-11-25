@@ -244,7 +244,7 @@ kbd.is-down { transform: translateY(3px); box-shadow: inset 0 0 0 1px var(--embe
 /* ---------- download ---------- */
 .download { padding-top: 12vh; padding-bottom: 14vh; text-align: center; }
 .download__title { font-size: clamp(60px, 11vw, 200px); margin: 0 0 8vh; }
-.platforms { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; max-width: 1180px; margin: 0 auto; }
+.platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: 1180px; margin: 0 auto; }
 .platform {
   display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 26px; border-radius: 22px; text-decoration: none; text-align: left;
   box-shadow: inset 0 0 0 1px var(--rule); background: rgba(239,233,223,.03); transition: background .35s, color .35s;
@@ -255,7 +255,7 @@ kbd.is-down { transform: translateY(3px); box-shadow: inset 0 0 0 1px var(--embe
 .platform:hover, .platform.is-yours { background: var(--ember); color: var(--ink); }
 .platform:hover .mono, .platform:hover small, .platform.is-yours .mono, .platform.is-yours small { color: rgba(15,14,12,.7); }
 .download__note { margin-top: 5vh; color: var(--paper-3); text-transform: none; letter-spacing: .04em; }
-@media (max-width: 860px) { .platforms { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 860px) { .platforms { grid-template-columns: 1fr; } }
 
 /* ---------- footer ---------- */
 .footer { padding: 0 var(--gutter); overflow: hidden; border-top: 1px solid var(--rule); }

@@ -141,10 +141,8 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --features gpu
-          - name: macOS (Intel)
-            os: macos-latest
-            target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin
+          # No Intel macOS build: ort (Parakeet) has no prebuilt ONNX Runtime
+          # for x86_64-apple-darwin.
           - name: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc

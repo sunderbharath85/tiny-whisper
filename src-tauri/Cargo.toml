@@ -37,7 +37,13 @@ whisper-rs = { version = "0.16", default-features = false }
 
 # Parakeet ASR (CTC + TDT) via ONNX Runtime. CPU by default; the `gpu` feature
 # below enables DirectML on Windows so we can match whisper's GPU toggle.
-parakeet-rs = { version = "0.3", features = ["sortformer"] }
+parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "sortformer"] }
+# Not used directly: picks ort's features for parakeet-rs. These are ort's
+# defaults minus `copy-dylibs`, whose build script assumes cargo's old target
+# layout and panics on newer stable Rust (it tries to copy DirectML.dll into
+# target/<profile>/build/examples). ONNX Runtime links statically either way,
+# and the bundle never shipped that DLL; Windows provides DirectML.dll.
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "api-24"] }
 
 [dependencies.arboard]
 version = "3"

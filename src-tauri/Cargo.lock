@@ -5183,6 +5183,7 @@ dependencies = [
  "hound",
  "log",
  "once_cell",
+ "ort",
  "parakeet-rs",
  "parking_lot",
  "reqwest 0.12.28",

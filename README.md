@@ -105,7 +105,6 @@ Download the installer for your system from the [latest release](https://github.
 | System | File | Notes |
 | --- | --- | --- |
 | macOS — Apple Silicon | `.dmg` (aarch64) | Built with Metal GPU acceleration. |
-| macOS — Intel | `.dmg` (x64) | CPU build. |
 | Windows 10 / 11 | `.msi` or `.exe` | |
 | Linux x64 | `.AppImage` or `.deb` | Built on Ubuntu 24.04; needs glibc 2.38 or newer. |
 
@@ -237,7 +236,7 @@ The Rust backend owns all behaviour; the UI talks to it only through `src/api.ts
 
 ## Releasing
 
-Releases are built by GitHub Actions (`.github/workflows/release.yml`) for macOS (Apple Silicon + Intel), Windows and Linux.
+Releases are built by GitHub Actions (`.github/workflows/release.yml`) for macOS (Apple Silicon), Windows and Linux. There's no Intel Mac build: ONNX Runtime, which Parakeet runs on, has no prebuilt Intel macOS binaries for the `ort` crate.
 
 1. Add the release notes under a new heading in `CHANGELOG.md`, e.g. `## [1.0.1] - 2026-12-01`.
 2. Set the version everywhere at once: `npm run version:set -- 1.0.1`
